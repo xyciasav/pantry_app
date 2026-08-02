@@ -26,7 +26,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.3.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.4.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -451,6 +451,67 @@ def item_stock_page(request: Request, item_id: int):
             )
         ]
     return render(request, "stock.html", item=dict(item), stocks=stocks)
+
+
+@app.get("/items/{item_id}/merge", response_class=HTMLResponse)
+def merge_item_page(request: Request, item_id: int):
+    with closing(db()) as conn:
+        item = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
+        if not item:
+            raise HTTPException(404)
+        candidates = [
+            dict(row)
+            for row in conn.execute(
+                """SELECT items.*, COALESCE(SUM(item_stocks.quantity), 0) AS total_quantity
+                   FROM items LEFT JOIN item_stocks ON item_stocks.item_id = items.id
+                   WHERE items.id != ?
+                   GROUP BY items.id
+                   ORDER BY CASE WHEN items.category = ? THEN 0 ELSE 1 END, items.name""",
+                (item_id, item["category"]),
+            )
+        ]
+    return render(request, "merge.html", item=dict(item), candidates=candidates)
+
+
+@app.post("/items/{item_id}/merge")
+def merge_item(item_id: int, source_id: int = Form(...)):
+    if item_id == source_id:
+        raise HTTPException(400, "An item cannot be combined with itself")
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(db()) as conn:
+        target = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
+        source = conn.execute("SELECT * FROM items WHERE id = ?", (source_id,)).fetchone()
+        if not target or not source:
+            raise HTTPException(404)
+        source_stocks = conn.execute("SELECT * FROM item_stocks WHERE item_id = ?", (source_id,)).fetchall()
+        for stock in source_stocks:
+            conn.execute(
+                """INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(item_id, location_id) DO UPDATE SET
+                     quantity = item_stocks.quantity + excluded.quantity,
+                     opened = item_stocks.opened + excluded.opened,
+                     updated_at = excluded.updated_at""",
+                (item_id, stock["location_id"], stock["quantity"], stock["opened"], now),
+            )
+        details = f"Combined from {source['name']}"
+        if source["barcode"]:
+            details += f" [barcode {source['barcode']}]"
+        if source["notes"]:
+            details += f": {source['notes']}"
+        merged_notes = "\n".join(part for part in (target["notes"].strip(), details) if part)
+        expirations = [value for value in (target["expires_on"], source["expires_on"]) if value]
+        purchase_dates = [value for value in (target["bought_on"], source["bought_on"]) if value]
+        total = conn.execute("SELECT COALESCE(SUM(quantity), 0) FROM item_stocks WHERE item_id = ?", (item_id,)).fetchone()[0]
+        conn.execute(
+            """UPDATE items SET quantity=?, low_at=?, bought_on=?, expires_on=?, notes=?,
+                     barcode=?, image_url=?, updated_at=? WHERE id=?""",
+            (total, max(target["low_at"], source["low_at"]), min(purchase_dates) if purchase_dates else None, min(expirations) if expirations else None, merged_notes, target["barcode"] or source["barcode"], target["image_url"] or source["image_url"], now, item_id),
+        )
+        conn.execute("DELETE FROM item_stocks WHERE item_id = ?", (source_id,))
+        conn.execute("DELETE FROM items WHERE id = ?", (source_id,))
+        conn.commit()
+    return RedirectResponse("/", status_code=303)
 
 
 @app.post("/items/{item_id}/stock")
