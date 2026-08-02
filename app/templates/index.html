@@ -3,9 +3,9 @@
 <section class="hero">
   <div><p class="eyebrow">YOUR KITCHEN AT A GLANCE</p><h1>What’s on the shelf?</h1><p>Use what you have, waste less, and never run out of the good stuff.</p></div>
   <div class="summary">
-    <div><strong>{{ counts.all }}</strong><span>items</span></div>
-    <div class="warn"><strong>{{ counts.expiring }}</strong><span>expiring</span></div>
-    <div class="low"><strong>{{ counts.low }}</strong><span>running low</span></div>
+    <a href="/inventory"><strong>{{ counts.all }}</strong><span>items</span></a>
+    <a class="warn" href="/inventory?status=expiring"><strong>{{ counts.expiring }}</strong><span>expiring</span></a>
+    <a class="low" href="/inventory?status=low"><strong>{{ counts.low }}</strong><span>running low</span></a>
   </div>
 </section>
 

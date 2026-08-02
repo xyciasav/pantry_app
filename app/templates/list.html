@@ -2,8 +2,8 @@
 {% block title %}Inventory list · Shelf Life{% endblock %}
 {% block content %}
 <section class="list-shell">
-  <div class="list-heading"><div><p class="eyebrow">QUICK STOCK VIEW</p><h1>Inventory list</h1><p>Needs attention first, then sorted from least to most unopened.</p></div><a class="secondary-button" href="/">Card view</a></div>
-  <form class="list-search" method="get"><label class="search"><span>⌕</span><input type="search" name="q" value="{{ q }}" placeholder="Search items or groups…" aria-label="Search inventory"></label><button class="save-button">Search</button></form>
+  <div class="list-heading"><div><p class="eyebrow">QUICK STOCK VIEW</p><h1>{% if status == 'low' %}Running low{% elif status == 'expiring' %}Expiring items{% else %}Inventory list{% endif %}</h1><p>Needs attention first, then sorted from least to most unopened.</p></div><a class="secondary-button" href="/">Card view</a></div>
+  <form class="list-search" method="get"><input type="hidden" name="status" value="{{ status }}"><label class="search"><span>⌕</span><input type="search" name="q" value="{{ q }}" placeholder="Search items or groups…" aria-label="Search inventory"></label><button class="save-button">Search</button>{% if status != 'all' %}<a class="secondary-button" href="/inventory">Clear filter</a>{% endif %}</form>
   <div class="inventory-table">
     <div class="inventory-head"><span>Item</span><span>Stock</span><span>Locations</span><span>Expires</span><span></span></div>
     {% for item in items %}

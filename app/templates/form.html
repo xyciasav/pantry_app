@@ -12,6 +12,7 @@
     <label class="field wide"><span>Item name</span><input name="name" value="{{ item.name if item else '' }}" placeholder="e.g. Greek yogurt" required autofocus></label>
     <label class="field"><span>Category</span><select name="category">{% for key, meta in categories.items() %}<option value="{{ key }}" {% if item and item.category == key %}selected{% endif %}>{{ meta[1] }} {{ meta[0] }}</option>{% endfor %}</select></label>
     <label class="field photo-field"><span>Item photo <em>optional</em></span><input type="file" name="photo" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" capture="environment"><small>Choose a photo or use your phone camera. Max 10 MB.</small></label>
+    <fieldset class="generic-photo-picker wide"><legend>Or choose a built-in picture</legend><div>{% for picture in generic_images %}<label><input type="radio" name="generic_image" value="{{ picture.url }}" {% if item and item.image_url == picture.url %}checked{% endif %}><span><img src="{{ picture.url }}" alt=""><b>{{ picture.label }}</b></span></label>{% endfor %}</div></fieldset>
     {% if is_new %}
     <label class="field"><span>Stored in</span><select name="location_id">{% for location in locations %}<option value="{{ location.id }}">{{ location.name }} · {{ location.kind|title }}</option>{% endfor %}</select><small><a href="/locations">Manage locations</a></small></label>
     <label class="field"><span>Unopened</span><input type="number" min="0" step="0.25" name="unopened" value="1"><small>Sealed packages or containers.</small></label>

@@ -30,7 +30,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.6.2")
+APP_VERSION = os.getenv("APP_VERSION", "1.6.3")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -327,7 +327,8 @@ def view_item(row: sqlite3.Row) -> dict:
 
 def render(request: Request, name: str, **context) -> HTMLResponse:
     template = templates.get_template(name)
-    return HTMLResponse(template.render(request=request, categories=CATEGORIES, locations=get_locations(), app_version=APP_VERSION, **context))
+    generic_images = [{"url": f"/static/items/{path.name}", "label": path.stem.replace("-", " ").title()} for path in sorted((BASE_DIR / "static" / "items").glob("*.webp"))]
+    return HTMLResponse(template.render(request=request, categories=CATEGORIES, locations=get_locations(), generic_images=generic_images, app_version=APP_VERSION, **context))
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -481,6 +482,7 @@ async def save_item(
     notes: str = Form(""),
     barcode: str = Form(""),
     image_url: str = Form(""),
+    generic_image: str = Form(""),
     photo: UploadFile | None = File(None),
 ):
     starting_unopened = unopened if unopened is not None else quantity
@@ -488,6 +490,11 @@ async def save_item(
         raise HTTPException(400, "Name is required and quantities cannot be negative")
     now = datetime.now().isoformat(timespec="seconds")
     saved_image_url = image_url.strip()
+    valid_generic_images = {f"/static/items/{path.name}" for path in (BASE_DIR / "static" / "items").glob("*.webp")}
+    if generic_image:
+        if generic_image not in valid_generic_images:
+            raise HTTPException(400, "Choose a valid built-in image")
+        saved_image_url = generic_image
     if photo and photo.filename:
         allowed = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/heic": ".heic", "image/heif": ".heif"}
         extension = allowed.get((photo.content_type or "").lower())
@@ -669,7 +676,7 @@ def ungroup_item(item_id: int):
 
 
 @app.get("/inventory", response_class=HTMLResponse)
-def inventory_list(request: Request, q: str = ""):
+def inventory_list(request: Request, q: str = "", status: str = "all"):
     params: list[str] = []
     where = ""
     if q.strip():
@@ -701,8 +708,14 @@ def inventory_list(request: Request, q: str = ""):
     state_order = {"out": 0, "expired": 1, "low": 2, "expiring": 3, "good": 4}
     for item in items:
         item["stocks"] = stocks.get(item["id"], [])
+    if status == "low":
+        items = [item for item in items if item["state"] in {"out", "low"}]
+    elif status == "expiring":
+        items = [item for item in items if item["state"] in {"expired", "expiring"}]
+    elif status != "all":
+        raise HTTPException(400, "Invalid inventory status filter")
     items.sort(key=lambda item: (state_order[item["state"]], item["unopened_quantity"], item["expires_on"] is None, item["expires_on"] or "", item["name"].lower()))
-    return render(request, "list.html", items=items, q=q)
+    return render(request, "list.html", items=items, q=q, status=status)
 
 
 @app.post("/items/{item_id}/stock")
