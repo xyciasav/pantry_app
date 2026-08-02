@@ -8,17 +8,20 @@ import base64
 import binascii
 import hashlib
 import hmac
+import io
 import secrets
+import shutil
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -26,15 +29,18 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.5.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.6.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
+API_KEY = os.getenv("PANTRY_API_KEY", "")
 COOKIE_SECURE_MODE = os.getenv("PANTRY_COOKIE_SECURE", "auto").strip().lower()
 SESSION_SECONDS = int(float(os.getenv("PANTRY_SESSION_HOURS", "12")) * 3600)
 COOKIE_NAME = "pantry_session"
 LEGACY_COOKIE_NAME = "__Host-pantry_session"
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+UPLOAD_DIR = DATA_DIR / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 CATEGORIES = {
     "produce": ("Produce", "🥬"),
@@ -46,6 +52,8 @@ CATEGORIES = {
     "drinks": ("Drinks", "🧃"),
     "other": ("Other", "🛒"),
 }
+
+DEFAULT_CATEGORIES = CATEGORIES.copy()
 
 ITEM_ART = {
     "onion": ("onion", "onions", "shallot", "shallots"),
@@ -69,6 +77,7 @@ ITEM_ART = {
 
 app = FastAPI(title="Shelf Life")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 templates = Environment(
     loader=FileSystemLoader(BASE_DIR / "templates"),
     autoescape=select_autoescape(["html", "xml"]),
@@ -120,12 +129,21 @@ def prevent_browser_cache(response):
     return response
 
 
+def valid_api_key(request: Request) -> bool:
+    if not API_KEY:
+        return False
+    authorization = request.headers.get("authorization", "")
+    supplied = authorization[7:] if authorization.lower().startswith("bearer ") else ""
+    return bool(supplied) and hmac.compare_digest(supplied, API_KEY)
+
+
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     path = request.url.path
     public = path in {"/login", "/health"} or path.startswith("/static/")
     session_token = request.cookies.get(COOKIE_NAME) or request.cookies.get(LEGACY_COOKIE_NAME)
-    if not public and not valid_session_token(session_token):
+    api_access = path == "/api/inventory" and valid_api_key(request)
+    if not public and not api_access and not valid_session_token(session_token):
         if path.startswith("/api/"):
             return prevent_browser_cache(JSONResponse({"detail": "Authentication required"}, status_code=401))
         next_path = urllib.parse.quote(path if path.startswith("/") else "/", safe="/")
@@ -196,6 +214,18 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS categories (
+                key TEXT PRIMARY KEY,
+                label TEXT NOT NULL UNIQUE,
+                icon TEXT NOT NULL DEFAULT '•',
+                custom INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        for key, (label, icon) in DEFAULT_CATEGORIES.items():
+            conn.execute("INSERT OR IGNORE INTO categories (key, label, icon, custom) VALUES (?, ?, ?, 0)", (key, label, icon))
         columns = {row[1] for row in conn.execute("PRAGMA table_info(items)")}
         for name, definition in {
             "location_id": "INTEGER REFERENCES locations(id)",
@@ -221,6 +251,8 @@ def init_db() -> None:
             (now,),
         )
         conn.commit()
+        CATEGORIES.clear()
+        CATEGORIES.update({row["key"]: (row["label"], row["icon"]) for row in conn.execute("SELECT * FROM categories ORDER BY label")})
 
 
 def get_locations(conn: sqlite3.Connection | None = None) -> list[dict]:
@@ -426,7 +458,7 @@ def edit_item(request: Request, item_id: int):
 
 
 @app.post("/items/save")
-def save_item(
+async def save_item(
     item_id: int | None = Form(None),
     name: str = Form(...),
     category: str = Form("other"),
@@ -441,16 +473,29 @@ def save_item(
     notes: str = Form(""),
     barcode: str = Form(""),
     image_url: str = Form(""),
+    photo: UploadFile | None = File(None),
 ):
     starting_unopened = unopened if unopened is not None else quantity
     if not name.strip() or low_at < 0 or (starting_unopened is not None and starting_unopened < 0) or opened < 0:
         raise HTTPException(400, "Name is required and quantities cannot be negative")
     now = datetime.now().isoformat(timespec="seconds")
+    saved_image_url = image_url.strip()
+    if photo and photo.filename:
+        allowed = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/heic": ".heic", "image/heif": ".heif"}
+        extension = allowed.get((photo.content_type or "").lower())
+        if not extension:
+            raise HTTPException(400, "Upload a JPG, PNG, WebP, or HEIC photo")
+        content = await photo.read(10 * 1024 * 1024 + 1)
+        if len(content) > 10 * 1024 * 1024:
+            raise HTTPException(400, "Photo must be 10 MB or smaller")
+        filename = f"{secrets.token_hex(16)}{extension}"
+        (UPLOAD_DIR / filename).write_bytes(content)
+        saved_image_url = f"/uploads/{filename}"
     with closing(db()) as conn:
         if item_id:
             conn.execute(
                 "UPDATE items SET name=?, category=?, unit=?, low_at=?, bought_on=?, expires_on=?, notes=?, barcode=?, image_url=?, updated_at=? WHERE id=?",
-                (name.strip(), category if category in CATEGORIES else "other", unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), barcode.strip(), image_url.strip(), now, item_id),
+                (name.strip(), category if category in CATEGORIES else "other", unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), barcode.strip(), saved_image_url, now, item_id),
             )
         else:
             if location_id is None or starting_unopened is None:
@@ -461,7 +506,7 @@ def save_item(
                 raise HTTPException(400, "Invalid storage location")
             cursor = conn.execute(
                 "INSERT INTO items (name, category, location, location_id, quantity, unit, low_at, bought_on, expires_on, notes, barcode, image_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (name.strip(), category if category in CATEGORIES else "other", location_row["kind"], location_id, total_quantity, unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), barcode.strip(), image_url.strip(), now, now),
+                (name.strip(), category if category in CATEGORIES else "other", location_row["kind"], location_id, total_quantity, unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), barcode.strip(), saved_image_url, now, now),
             )
             conn.execute("INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at) VALUES (?, ?, ?, ?, ?)", (cursor.lastrowid, location_id, total_quantity, opened, now))
         conn.commit()
@@ -603,22 +648,27 @@ def ungroup_item(item_id: int):
 
 
 @app.post("/items/{item_id}/stock")
-def update_item_stock(item_id: int, location_id: int = Form(...), unopened: float = Form(0), opened: float = Form(0)):
-    if unopened < 0 or opened < 0:
-        raise HTTPException(400, "Unopened and open quantities cannot be negative")
-    quantity = unopened + opened
+async def update_item_stock(item_id: int, request: Request):
+    form = await request.form()
     now = datetime.now().isoformat(timespec="seconds")
     with closing(db()) as conn:
         if not conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
             raise HTTPException(404)
-        if not conn.execute("SELECT 1 FROM locations WHERE id = ?", (location_id,)).fetchone():
-            raise HTTPException(400, "Invalid storage location")
-        conn.execute(
-            """INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(item_id, location_id) DO UPDATE SET quantity=excluded.quantity, opened=excluded.opened, updated_at=excluded.updated_at""",
-            (item_id, location_id, quantity, opened, now),
-        )
+        location_ids = [row[0] for row in conn.execute("SELECT id FROM locations")]
+        for location_id in location_ids:
+            try:
+                unopened = float(form.get(f"unopened_{location_id}", 0))
+                opened = float(form.get(f"opened_{location_id}", 0))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, "Enter valid stock quantities") from exc
+            if unopened < 0 or opened < 0:
+                raise HTTPException(400, "Unopened and open quantities cannot be negative")
+            conn.execute(
+                """INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(item_id, location_id) DO UPDATE SET quantity=excluded.quantity, opened=excluded.opened, updated_at=excluded.updated_at""",
+                (item_id, location_id, unopened + opened, opened, now),
+            )
         total = conn.execute("SELECT COALESCE(SUM(quantity), 0) FROM item_stocks WHERE item_id = ?", (item_id,)).fetchone()[0]
         conn.execute("UPDATE items SET quantity=?, updated_at=? WHERE id=?", (total, now, item_id))
         conn.commit()
@@ -677,6 +727,105 @@ def delete_location(location_id: int):
     return RedirectResponse("/locations", status_code=303)
 
 
+@app.get("/manage", response_class=HTMLResponse)
+def manage_page(request: Request, restored: str = ""):
+    with closing(db()) as conn:
+        managed_categories = [dict(row) for row in conn.execute(
+            """SELECT categories.*, COUNT(items.id) AS item_count
+               FROM categories LEFT JOIN items ON items.category = categories.key
+               GROUP BY categories.key ORDER BY categories.label"""
+        )]
+    return render(request, "manage.html", managed_categories=managed_categories, restored=restored, api_enabled=bool(API_KEY))
+
+
+@app.post("/categories")
+def add_category(label: str = Form(...), icon: str = Form("•")):
+    clean_label = label.strip()
+    key = re.sub(r"[^a-z0-9]+", "-", clean_label.lower()).strip("-")
+    if not clean_label or not key:
+        raise HTTPException(400, "Enter a category name")
+    try:
+        with closing(db()) as conn:
+            conn.execute("INSERT INTO categories (key, label, icon, custom) VALUES (?, ?, ?, 1)", (key, clean_label, icon.strip() or "•"))
+            conn.commit()
+            CATEGORIES[key] = (clean_label, icon.strip() or "•")
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, "That category already exists") from exc
+    return RedirectResponse("/manage", status_code=303)
+
+
+@app.post("/categories/{key}/delete")
+def delete_category(key: str):
+    with closing(db()) as conn:
+        category = conn.execute("SELECT custom FROM categories WHERE key=?", (key,)).fetchone()
+        if not category or not category["custom"]:
+            raise HTTPException(400, "Built-in categories cannot be removed")
+        if conn.execute("SELECT COUNT(*) FROM items WHERE category=?", (key,)).fetchone()[0]:
+            raise HTTPException(409, "Move items out of this category before removing it")
+        conn.execute("DELETE FROM categories WHERE key=?", (key,))
+        conn.commit()
+        CATEGORIES.pop(key, None)
+    return RedirectResponse("/manage", status_code=303)
+
+
+@app.get("/backup")
+def download_backup():
+    backup_path = DATA_DIR / f"backup-{secrets.token_hex(8)}.db"
+    try:
+        with closing(db()) as source, closing(sqlite3.connect(backup_path)) as destination:
+            source.backup(destination)
+        bundle = io.BytesIO()
+        with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.write(backup_path, "pantry.db")
+            for photo in UPLOAD_DIR.iterdir():
+                if photo.is_file():
+                    archive.write(photo, f"uploads/{photo.name}")
+        content = bundle.getvalue()
+    finally:
+        backup_path.unlink(missing_ok=True)
+    filename = f"shelf-life-{date.today().isoformat()}.zip"
+    return Response(content, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.post("/backup/restore")
+async def restore_backup(backup: UploadFile = File(...)):
+    content = await backup.read(100 * 1024 * 1024 + 1)
+    if len(content) > 100 * 1024 * 1024:
+        raise HTTPException(400, "Backup must be 100 MB or smaller")
+    candidate = DATA_DIR / f"restore-{secrets.token_hex(8)}.db"
+    safety_copy = DATA_DIR / "pantry-before-restore.db"
+    restored_photos: list[tuple[str, bytes]] = []
+    if content.startswith(b"PK"):
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                database_content = archive.read("pantry.db")
+                for entry in archive.infolist():
+                    if entry.filename.startswith("uploads/") and not entry.is_dir():
+                        filename = Path(entry.filename).name
+                        if filename and entry.file_size <= 10 * 1024 * 1024:
+                            restored_photos.append((filename, archive.read(entry)))
+        except (zipfile.BadZipFile, KeyError) as exc:
+            raise HTTPException(400, "This is not a valid Shelf Life backup") from exc
+    else:
+        database_content = content
+    candidate.write_bytes(database_content)
+    try:
+        with closing(sqlite3.connect(candidate)) as conn:
+            if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise HTTPException(400, "The uploaded database is damaged")
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not {"items", "locations", "item_stocks"}.issubset(tables):
+                raise HTTPException(400, "This is not a Shelf Life backup")
+        shutil.copy2(DB_PATH, safety_copy)
+        candidate.replace(DB_PATH)
+        for filename, photo_content in restored_photos:
+            (UPLOAD_DIR / filename).write_bytes(photo_content)
+        init_db()
+    finally:
+        candidate.unlink(missing_ok=True)
+    return RedirectResponse("/manage?restored=1", status_code=303)
+
+
 @app.get("/scan", response_class=HTMLResponse)
 def scan_page(request: Request):
     return render(request, "scan.html")
@@ -726,3 +875,39 @@ def barcode_lookup(code: str):
         "unit": quantity or "item",
         "image_url": product.get("image_front_url") or "",
     }
+
+
+@app.get("/api/inventory")
+def inventory_api():
+    with closing(db()) as conn:
+        rows = conn.execute(
+            """SELECT items.*, product_groups.name AS group_name,
+                      COALESCE(SUM(item_stocks.quantity), 0) AS total_quantity,
+                      COALESCE(SUM(item_stocks.opened), 0) AS opened_quantity
+               FROM items
+               LEFT JOIN product_groups ON product_groups.id = items.group_id
+               LEFT JOIN item_stocks ON item_stocks.item_id = items.id
+               GROUP BY items.id ORDER BY items.name"""
+        ).fetchall()
+        stock_rows = conn.execute(
+            """SELECT item_stocks.item_id, locations.name, locations.kind,
+                      item_stocks.quantity, item_stocks.opened
+               FROM item_stocks JOIN locations ON locations.id=item_stocks.location_id
+               WHERE item_stocks.quantity > 0 ORDER BY locations.name"""
+        ).fetchall()
+    stocks: dict[int, list[dict]] = {}
+    for row in stock_rows:
+        stock = dict(row)
+        stock["unopened"] = stock["quantity"] - stock["opened"]
+        stocks.setdefault(stock.pop("item_id"), []).append(stock)
+    inventory = []
+    for row in rows:
+        item = view_item(row)
+        inventory.append({
+            "id": item["id"], "name": item["name"], "group": item.get("group_name"),
+            "category": item["category_label"], "unopened": item["unopened_quantity"],
+            "open": item["opened_quantity"], "total": item["quantity"], "unit": item["unit"],
+            "bought_on": item["bought_on"], "expires_on": item["expires_on"], "state": item["state"],
+            "barcode": item.get("barcode"), "notes": item["notes"], "locations": stocks.get(item["id"], []),
+        })
+    return {"version": APP_VERSION, "generated_at": datetime.now().isoformat(timespec="seconds"), "items": inventory}

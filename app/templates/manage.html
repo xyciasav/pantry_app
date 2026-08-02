@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Manage · Shelf Life{% endblock %}
+{% block content %}
+<section class="form-shell manage-shell">
+  <a class="back" href="/">← Back to kitchen</a>
+  <div class="form-heading"><p class="eyebrow">SETTINGS & DATA</p><h1>Manage Shelf Life</h1><p>Locations, categories, backups, and local integrations.</p></div>
+  {% if restored %}<div class="success-note">Backup restored successfully. The previous database is retained as <code>pantry-before-restore.db</code> in the data volume.</div>{% endif %}
+
+  <section class="manage-card"><div><h2>Storage locations</h2><p>Add or remove fridges, freezers, and pantry spaces.</p></div><a class="secondary-button" href="/locations">Manage locations</a></section>
+
+  <section class="manage-card manage-stack">
+    <div><h2>Categories</h2><p>Add categories that appear in item forms and filters.</p></div>
+    <form class="category-form" method="post" action="/categories"><label class="field"><span>Icon</span><input name="icon" value="•" maxlength="8"></label><label class="field"><span>Category name</span><input name="label" placeholder="Canned goods" required></label><button class="save-button">Add category</button></form>
+    <div class="category-list">{% for category in managed_categories %}<article><span>{{ category.icon }}</span><strong>{{ category.label }}</strong><small>{{ category.item_count }} items</small>{% if category.custom %}<form method="post" action="/categories/{{ category.key }}/delete"><button {% if category.item_count %}disabled title="Move items first"{% endif %}>Remove</button></form>{% endif %}</article>{% endfor %}</div>
+  </section>
+
+  <section class="manage-card manage-stack">
+    <div><h2>Backups</h2><p>Download one ZIP containing the inventory database and uploaded photos. Restoring validates it first and keeps a safety copy of the current database.</p></div>
+    <div class="backup-actions"><a class="add-button" href="/backup">Download backup</a><form method="post" action="/backup/restore" enctype="multipart/form-data" onsubmit="return confirm('Restore this backup? Your current database will be replaced after a safety copy is made.')"><input type="file" name="backup" accept=".zip,.db,application/zip,application/vnd.sqlite3,application/octet-stream" required><button class="save-button">Restore backup</button></form></div>
+  </section>
+
+  <section class="manage-card"><div><h2>Local LLM API</h2><p>{% if api_enabled %}Enabled. Send <code>Authorization: Bearer YOUR_KEY</code> to <code>GET /api/inventory</code>.{% else %}Set <code>PANTRY_API_KEY</code> in Portainer to enable read-only inventory access at <code>GET /api/inventory</code>.{% endif %}</p></div><span class="api-status {{ 'enabled' if api_enabled else '' }}">{{ 'Enabled' if api_enabled else 'Not configured' }}</span></section>
+</section>
+{% endblock %}

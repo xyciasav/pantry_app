@@ -1,19 +1,20 @@
 services:
   pantry:
-    image: "${PANTRY_IMAGE_NAME:-shelf-life}:${PANTRY_VERSION:-1.5.0}"
+    image: "${PANTRY_IMAGE_NAME:-shelf-life}:${PANTRY_VERSION:-1.6.0}"
     build:
       context: .
       args:
-        APP_VERSION: "${PANTRY_VERSION:-1.5.0}"
+        APP_VERSION: "${PANTRY_VERSION:-1.6.0}"
     container_name: shelf-life
     restart: unless-stopped
     ports:
       - "${PANTRY_PORT:-8000}:8000"
     environment:
-      APP_VERSION: "${PANTRY_VERSION:-1.5.0}"
+      APP_VERSION: "${PANTRY_VERSION:-1.6.0}"
       PANTRY_USERNAME: "${PANTRY_USERNAME:?Set PANTRY_USERNAME in Portainer}"
       PANTRY_PASSWORD: "${PANTRY_PASSWORD:?Set PANTRY_PASSWORD in Portainer}"
       PANTRY_SECRET_KEY: "${PANTRY_SECRET_KEY:?Set a random 32+ character PANTRY_SECRET_KEY in Portainer}"
+      PANTRY_API_KEY: "${PANTRY_API_KEY:-}"
       PANTRY_COOKIE_SECURE: "${PANTRY_COOKIE_SECURE:-auto}"
       PANTRY_SESSION_HOURS: "${PANTRY_SESSION_HOURS:-12}"
     volumes:

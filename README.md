@@ -45,11 +45,11 @@ Changing the password or signing key immediately invalidates existing sessions. 
 
 ### Version and image name
 
-The default Docker image is named `shelf-life:1.5.0`, and the same version appears in the website header, footer, and `/health` response.
+The default Docker image is named `shelf-life:1.6.0`, and the same version appears in the website header, footer, and `/health` response.
 
 Portainer stack variables can override these values:
 
-- `PANTRY_VERSION=1.5.0` controls the Docker tag and displayed website version.
+- `PANTRY_VERSION=1.6.0` controls the Docker tag and displayed website version.
 - `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
 
 For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.
@@ -61,6 +61,18 @@ For each release, change `PANTRY_VERSION` to the new version before rebuilding t
 - Per-item stock split across multiple locations, with separate opened-package counts
 - Login protection for the entire inventory and API
 - Group similar products into one dashboard total while preserving each brand, barcode, location, and expiration
+- Custom categories, item photo uploads, and downloadable/restorable database backups
+- Read-only inventory API for local LLM integrations using `PANTRY_API_KEY`
+
+## Local LLM inventory API
+
+Set a long random `PANTRY_API_KEY` in Portainer, then query the read-only endpoint:
+
+```bash
+curl -H "Authorization: Bearer YOUR_KEY" https://your-shelf-life.example/api/inventory
+```
+
+The response includes every item, product group, unopened/open totals, locations, dates, barcodes, notes, and stock state. The API key does not grant write access.
 - Phone camera barcode scanning with Open Food Facts product lookup
 - One-tap quantity adjustment
 - Purchase and expiration dates
