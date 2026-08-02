@@ -20,7 +20,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.1.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.2.0")
 
 CATEGORIES = {
     "produce": ("Produce", "🥬"),
@@ -65,6 +65,7 @@ def db() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -85,6 +86,19 @@ def init_db() -> None:
                 notes TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS item_stocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                location_id INTEGER NOT NULL REFERENCES locations(id),
+                quantity REAL NOT NULL DEFAULT 0 CHECK(quantity >= 0),
+                opened REAL NOT NULL DEFAULT 0 CHECK(opened >= 0 AND opened <= quantity),
+                updated_at TEXT NOT NULL,
+                UNIQUE(item_id, location_id)
             )
             """
         )
@@ -115,6 +129,11 @@ def init_db() -> None:
                 WHERE locations.kind = items.location
                 ORDER BY id LIMIT 1
             ) WHERE location_id IS NULL"""
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO item_stocks (item_id, location_id, quantity, opened, updated_at)
+               SELECT id, location_id, quantity, 0, ? FROM items WHERE location_id IS NOT NULL""",
+            (now,),
         )
         conn.commit()
 
@@ -154,6 +173,8 @@ def item_art_url(name: str, category: str) -> str | None:
 
 def view_item(row: sqlite3.Row) -> dict:
     item = dict(row)
+    item["quantity"] = item.get("total_quantity", item.get("quantity", 0))
+    item["opened_quantity"] = item.get("opened_quantity", 0)
     today = date.today()
     expires = date.fromisoformat(item["expires_on"]) if item["expires_on"] else None
     days_left = (expires - today).days if expires else None
@@ -191,23 +212,41 @@ def health() -> dict:
 def home(request: Request, location: str = "all", category: str = "all", q: str = ""):
     clauses, params = [], []
     if location != "all":
-        clauses.append("items.location_id = ?")
+        clauses.append("EXISTS (SELECT 1 FROM item_stocks filtered_stock WHERE filtered_stock.item_id = items.id AND filtered_stock.location_id = ? AND filtered_stock.quantity > 0)")
         params.append(int(location))
     if category != "all":
-        clauses.append("category = ?")
+        clauses.append("items.category = ?")
         params.append(category)
     if q.strip():
-        clauses.append("name LIKE ?")
+        clauses.append("items.name LIKE ?")
         params.append(f"%{q.strip()}%")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with closing(db()) as conn:
         rows = conn.execute(
-            f"""SELECT items.*, locations.name AS location_name, locations.kind AS location_kind
-                FROM items LEFT JOIN locations ON locations.id = items.location_id
-                {where} ORDER BY CASE WHEN expires_on IS NULL THEN 1 ELSE 0 END, expires_on, items.name""",
+            f"""SELECT items.*,
+                       COALESCE(SUM(item_stocks.quantity), 0) AS total_quantity,
+                       COALESCE(SUM(item_stocks.opened), 0) AS opened_quantity,
+                       COUNT(CASE WHEN item_stocks.quantity > 0 THEN 1 END) AS active_locations,
+                       MIN(CASE WHEN item_stocks.quantity > 0 THEN locations.name END) AS location_name
+                FROM items
+                LEFT JOIN item_stocks ON item_stocks.item_id = items.id
+                LEFT JOIN locations ON locations.id = item_stocks.location_id
+                {where}
+                GROUP BY items.id
+                ORDER BY CASE WHEN items.expires_on IS NULL THEN 1 ELSE 0 END, items.expires_on, items.name""",
             params,
         ).fetchall()
+        stock_rows = conn.execute(
+            """SELECT item_stocks.item_id, locations.name, item_stocks.quantity, item_stocks.opened
+               FROM item_stocks JOIN locations ON locations.id = item_stocks.location_id
+               WHERE item_stocks.quantity > 0 ORDER BY locations.name"""
+        ).fetchall()
+    breakdowns: dict[int, list[dict]] = {}
+    for stock in stock_rows:
+        breakdowns.setdefault(stock["item_id"], []).append(dict(stock))
     items = [view_item(row) for row in rows]
+    for item in items:
+        item["stocks"] = breakdowns.get(item["id"], [])
     counts = {
         "all": len(items),
         "attention": sum(i["state"] in {"out", "low", "expired", "expiring"} for i in items),
@@ -237,8 +276,9 @@ def save_item(
     item_id: int | None = Form(None),
     name: str = Form(...),
     category: str = Form("other"),
-    location_id: int = Form(...),
-    quantity: float = Form(1),
+    location_id: int | None = Form(None),
+    quantity: float | None = Form(None),
+    opened: float = Form(0),
     unit: str = Form("item"),
     low_at: float = Form(1),
     bought_on: str | None = Form(None),
@@ -247,24 +287,26 @@ def save_item(
     barcode: str = Form(""),
     image_url: str = Form(""),
 ):
-    if not name.strip() or quantity < 0 or low_at < 0:
+    if not name.strip() or low_at < 0 or (quantity is not None and quantity < 0) or opened < 0:
         raise HTTPException(400, "Name is required and quantities cannot be negative")
     now = datetime.now().isoformat(timespec="seconds")
     with closing(db()) as conn:
-        location_row = conn.execute("SELECT kind FROM locations WHERE id = ?", (location_id,)).fetchone()
-        if not location_row:
-            raise HTTPException(400, "Invalid storage location")
-        values = (name.strip(), category if category in CATEGORIES else "other", location_row["kind"], location_id, quantity, unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), barcode.strip(), image_url.strip(), now)
         if item_id:
             conn.execute(
-                "UPDATE items SET name=?, category=?, location=?, location_id=?, quantity=?, unit=?, low_at=?, bought_on=?, expires_on=?, notes=?, barcode=?, image_url=?, updated_at=? WHERE id=?",
-                (*values, item_id),
+                "UPDATE items SET name=?, category=?, unit=?, low_at=?, bought_on=?, expires_on=?, notes=?, barcode=?, image_url=?, updated_at=? WHERE id=?",
+                (name.strip(), category if category in CATEGORIES else "other", unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), barcode.strip(), image_url.strip(), now, item_id),
             )
         else:
-            conn.execute(
+            if location_id is None or quantity is None or opened > quantity:
+                raise HTTPException(400, "Choose a location and keep opened quantity at or below total quantity")
+            location_row = conn.execute("SELECT kind FROM locations WHERE id = ?", (location_id,)).fetchone()
+            if not location_row:
+                raise HTTPException(400, "Invalid storage location")
+            cursor = conn.execute(
                 "INSERT INTO items (name, category, location, location_id, quantity, unit, low_at, bought_on, expires_on, notes, barcode, image_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (*values[:-1], now, now),
+                (name.strip(), category if category in CATEGORIES else "other", location_row["kind"], location_id, quantity, unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), barcode.strip(), image_url.strip(), now, now),
             )
+            conn.execute("INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at) VALUES (?, ?, ?, ?, ?)", (cursor.lastrowid, location_id, quantity, opened, now))
         conn.commit()
     return RedirectResponse("/", status_code=303)
 
@@ -272,19 +314,76 @@ def save_item(
 @app.post("/items/{item_id}/quantity")
 def change_quantity(item_id: int, delta: float = Form(...)):
     with closing(db()) as conn:
-        cursor = conn.execute(
-            "UPDATE items SET quantity = MAX(0, quantity + ?), updated_at = ? WHERE id = ?",
-            (delta, datetime.now().isoformat(timespec="seconds"), item_id),
-        )
+        now = datetime.now().isoformat(timespec="seconds")
+        stock = conn.execute(
+            """SELECT * FROM item_stocks WHERE item_id = ?
+               ORDER BY CASE WHEN opened > 0 THEN 0 ELSE 1 END, CASE WHEN quantity > 0 THEN 0 ELSE 1 END, id LIMIT 1""",
+            (item_id,),
+        ).fetchone()
+        if not stock:
+            item = conn.execute("SELECT location_id FROM items WHERE id = ?", (item_id,)).fetchone()
+            if not item or not item["location_id"]:
+                raise HTTPException(404)
+            conn.execute("INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at) VALUES (?, ?, 0, 0, ?)", (item_id, item["location_id"], now))
+            stock = conn.execute("SELECT * FROM item_stocks WHERE item_id = ? LIMIT 1", (item_id,)).fetchone()
+        new_quantity = max(0, stock["quantity"] + delta)
+        new_opened = max(0, stock["opened"] + delta) if delta < 0 and stock["opened"] > 0 else stock["opened"]
+        new_opened = min(new_opened, new_quantity)
+        cursor = conn.execute("UPDATE item_stocks SET quantity=?, opened=?, updated_at=? WHERE id=?", (new_quantity, new_opened, now, stock["id"]))
+        total = conn.execute("SELECT COALESCE(SUM(quantity), 0) FROM item_stocks WHERE item_id = ?", (item_id,)).fetchone()[0]
+        conn.execute("UPDATE items SET quantity=?, updated_at=? WHERE id=?", (total, now, item_id))
         conn.commit()
     if not cursor.rowcount:
         raise HTTPException(404)
     return RedirectResponse("/", status_code=303)
 
 
+@app.get("/items/{item_id}/stock", response_class=HTMLResponse)
+def item_stock_page(request: Request, item_id: int):
+    with closing(db()) as conn:
+        item = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
+        if not item:
+            raise HTTPException(404)
+        stocks = [
+            dict(row)
+            for row in conn.execute(
+                """SELECT locations.*, COALESCE(item_stocks.quantity, 0) AS quantity,
+                          COALESCE(item_stocks.opened, 0) AS opened
+                   FROM locations LEFT JOIN item_stocks
+                     ON item_stocks.location_id = locations.id AND item_stocks.item_id = ?
+                   ORDER BY locations.kind, locations.name""",
+                (item_id,),
+            )
+        ]
+    return render(request, "stock.html", item=dict(item), stocks=stocks)
+
+
+@app.post("/items/{item_id}/stock")
+def update_item_stock(item_id: int, location_id: int = Form(...), quantity: float = Form(0), opened: float = Form(0)):
+    if quantity < 0 or opened < 0 or opened > quantity:
+        raise HTTPException(400, "Opened quantity must be between zero and the total quantity")
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(db()) as conn:
+        if not conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
+            raise HTTPException(404)
+        if not conn.execute("SELECT 1 FROM locations WHERE id = ?", (location_id,)).fetchone():
+            raise HTTPException(400, "Invalid storage location")
+        conn.execute(
+            """INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(item_id, location_id) DO UPDATE SET quantity=excluded.quantity, opened=excluded.opened, updated_at=excluded.updated_at""",
+            (item_id, location_id, quantity, opened, now),
+        )
+        total = conn.execute("SELECT COALESCE(SUM(quantity), 0) FROM item_stocks WHERE item_id = ?", (item_id,)).fetchone()[0]
+        conn.execute("UPDATE items SET quantity=?, updated_at=? WHERE id=?", (total, now, item_id))
+        conn.commit()
+    return RedirectResponse(f"/items/{item_id}/stock", status_code=303)
+
+
 @app.post("/items/{item_id}/delete")
 def delete_item(item_id: int):
     with closing(db()) as conn:
+        conn.execute("DELETE FROM item_stocks WHERE item_id = ?", (item_id,))
         conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
         conn.commit()
     return RedirectResponse("/", status_code=303)
@@ -296,8 +395,8 @@ def locations_page(request: Request):
         locations = [
             dict(row)
             for row in conn.execute(
-                """SELECT locations.*, COUNT(items.id) AS item_count
-                   FROM locations LEFT JOIN items ON items.location_id = locations.id
+                """SELECT locations.*, COUNT(DISTINCT CASE WHEN item_stocks.quantity > 0 THEN item_stocks.item_id END) AS item_count
+                   FROM locations LEFT JOIN item_stocks ON item_stocks.location_id = locations.id
                    GROUP BY locations.id ORDER BY locations.kind, locations.name"""
             )
         ]
@@ -323,9 +422,11 @@ def add_location(name: str = Form(...), kind: str = Form("pantry")):
 @app.post("/locations/{location_id}/delete")
 def delete_location(location_id: int):
     with closing(db()) as conn:
-        count = conn.execute("SELECT COUNT(*) FROM items WHERE location_id = ?", (location_id,)).fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM item_stocks WHERE location_id = ? AND quantity > 0", (location_id,)).fetchone()[0]
         if count:
             raise HTTPException(409, "Move the items in this location before deleting it")
+        conn.execute("DELETE FROM item_stocks WHERE location_id = ?", (location_id,))
+        conn.execute("UPDATE items SET location_id = NULL WHERE location_id = ?", (location_id,))
         conn.execute("DELETE FROM locations WHERE id = ?", (location_id,))
         conn.commit()
     return RedirectResponse("/locations", status_code=303)

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ item.name }} stock · Shelf Life{% endblock %}
+{% block content %}
+<section class="form-shell stock-shell">
+  <a class="back" href="/">← Back to kitchen</a>
+  <div class="form-heading"><p class="eyebrow">STOCK BY LOCATION</p><h1>{{ item.name }}</h1><p>Set the total at each location and how many are already open.</p></div>
+  <div class="stock-list">
+    {% for stock in stocks %}
+    <form method="post" action="/items/{{ item.id }}/stock" class="stock-location-form">
+      <input type="hidden" name="location_id" value="{{ stock.id }}">
+      <div class="stock-location-name"><strong>{{ stock.name }}</strong><span>{{ stock.kind|title }}</span></div>
+      <label class="field"><span>Total there</span><input type="number" min="0" step="0.25" name="quantity" value="{{ stock.quantity }}" required></label>
+      <label class="field"><span>Already open</span><input type="number" min="0" step="0.25" name="opened" value="{{ stock.opened }}" required></label>
+      <button class="save-button">Save</button>
+    </form>
+    {% endfor %}
+  </div>
+  <p class="stock-note">“Already open” is included in the total. For example, total 6 with 1 open means 5 unopened + 1 open.</p>
+</section>
+{% endblock %}
