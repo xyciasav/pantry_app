@@ -25,6 +25,17 @@ PANTRY_PORT=8085 docker compose up -d --build
 
 The container continues to listen internally on port `8000`; only the host-facing port changes.
 
+### Version and image name
+
+The default Docker image is named `shelf-life:1.0.0`, and the same version appears in the website header, footer, and `/health` response.
+
+Portainer stack variables can override these values:
+
+- `PANTRY_VERSION=1.0.0` controls the Docker tag and displayed website version.
+- `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
+
+For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.
+
 ## Features
 
 - Grocery-style inventory cards for pantry, fridge, and freezer

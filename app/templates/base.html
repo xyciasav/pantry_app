@@ -12,7 +12,7 @@
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/"><span class="brand-mark">S</span><span>Shelf Life<small>Pantry & fridge</small></span></a>
+    <a class="brand" href="/"><span class="brand-mark">S</span><span>Shelf Life <b class="version-badge">v{{ app_version }}</b><small>Pantry & fridge</small></span></a>
     <nav class="top-actions">
       <a class="secondary-button" href="/locations">Locations</a>
       <a class="scan-button" href="/scan">▣ Scan</a>
@@ -20,6 +20,7 @@
     </nav>
   </header>
   <main>{% block content %}{% endblock %}</main>
+  <footer class="site-footer">Shelf Life <span>v{{ app_version }}</span></footer>
   {% block scripts %}{% endblock %}
 </body>
 </html>

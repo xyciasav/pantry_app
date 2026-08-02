@@ -20,6 +20,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
+APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
 
 CATEGORIES = {
     "produce": ("Produce", "🥬"),
@@ -188,12 +189,12 @@ def view_item(row: sqlite3.Row) -> dict:
 
 def render(request: Request, name: str, **context) -> HTMLResponse:
     template = templates.get_template(name)
-    return HTMLResponse(template.render(request=request, categories=CATEGORIES, locations=get_locations(), **context))
+    return HTMLResponse(template.render(request=request, categories=CATEGORIES, locations=get_locations(), app_version=APP_VERSION, **context))
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "version": APP_VERSION}
 
 
 @app.get("/", response_class=HTMLResponse)
