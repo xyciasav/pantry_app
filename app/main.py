@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +30,35 @@ CATEGORIES = {
     "bakery": ("Bakery", "🍞"),
     "drinks": ("Drinks", "🧃"),
     "other": ("Other", "🛒"),
+}
+
+ITEM_ART = {
+    "onion": ("onion", "onions", "shallot", "shallots"),
+    "garlic": ("garlic",),
+    "tomato": ("tomato", "tomatoes"),
+    "broccoli": ("broccoli",),
+    "apple": ("apple", "apples"),
+    "banana": ("banana", "bananas"),
+    "carrot": ("carrot", "carrots"),
+    "potato": ("potato", "potatoes", "spud", "spuds"),
+    "milk": ("milk", "cream", "half and half"),
+    "egg": ("egg", "eggs"),
+    "cheese": ("cheese", "cheddar", "mozzarella", "parmesan"),
+    "bread": ("bread", "loaf", "bagel", "buns", "rolls"),
+    "canned-food": ("can", "canned", "tin", "beans"),
+    "pasta": ("pasta", "noodles", "spaghetti", "macaroni"),
+    "chicken": ("chicken", "poultry", "turkey"),
+    "frozen-food": ("frozen", "ice cream", "pizza"),
+}
+
+CATEGORY_ART = {
+    "produce": "apple",
+    "dairy": "milk",
+    "meat": "chicken",
+    "frozen": "frozen-food",
+    "pantry": "canned-food",
+    "bakery": "bread",
+    "drinks": "milk",
 }
 
 app = FastAPI(title="Shelf Life")
@@ -121,6 +151,16 @@ def normalize_date(value: str | None) -> str | None:
         raise HTTPException(400, "Invalid date") from exc
 
 
+def item_art_url(name: str, category: str) -> str | None:
+    words = set(re.findall(r"[a-z]+", name.lower()))
+    normalized = " ".join(re.findall(r"[a-z]+", name.lower()))
+    for artwork, aliases in ITEM_ART.items():
+        if any((" " in alias and alias in normalized) or alias in words for alias in aliases):
+            return f"/static/items/{artwork}.webp"
+    fallback = CATEGORY_ART.get(category)
+    return f"/static/items/{fallback}.webp" if fallback else None
+
+
 def view_item(row: sqlite3.Row) -> dict:
     item = dict(row)
     today = date.today()
@@ -142,6 +182,7 @@ def view_item(row: sqlite3.Row) -> dict:
         days_left=days_left,
         state=state,
     )
+    item["image_url"] = item.get("image_url") or item_art_url(item["name"], item["category"])
     return item
 
 
