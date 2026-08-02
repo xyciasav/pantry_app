@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Storage locations · Shelf Life{% endblock %}
+{% block content %}
+<section class="form-shell locations-shell">
+  <a class="back" href="/">← Back to kitchen</a>
+  <div class="form-heading"><p class="eyebrow">ORGANIZE YOUR KITCHEN</p><h1>Storage locations</h1><p>Add every fridge, freezer, and pantry you use.</p></div>
+  <form class="location-form" method="post" action="/locations">
+    <label class="field"><span>Location name</span><input name="name" placeholder="e.g. Garage freezer" required></label>
+    <label class="field"><span>Type</span><select name="kind"><option value="fridge">Fridge</option><option value="freezer">Freezer</option><option value="pantry">Pantry</option></select></label>
+    <button class="save-button">Add location</button>
+  </form>
+  <div class="location-list">
+    {% for location in managed_locations %}
+    <article><div class="location-icon">{% if location.kind == 'fridge' %}❄{% elif location.kind == 'freezer' %}🧊{% else %}▤{% endif %}</div><div><h2>{{ location.name }}</h2><p>{{ location.kind|title }} · {{ location.item_count }} item{% if location.item_count != 1 %}s{% endif %}</p></div>{% if location.item_count == 0 %}<form method="post" action="/locations/{{ location.id }}/delete" onsubmit="return confirm('Delete {{ location.name }}?')"><button>Delete</button></form>{% endif %}</article>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

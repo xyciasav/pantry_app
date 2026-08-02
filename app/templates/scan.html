@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Scan barcode · Shelf Life{% endblock %}
+{% block content %}
+<section class="scan-shell">
+  <a class="back" href="/">← Back to kitchen</a>
+  <div class="form-heading"><p class="eyebrow">QUICK ADD</p><h1>Scan a barcode</h1><p>Point your phone at the product barcode and hold steady.</p></div>
+  <div class="scanner">
+    <video id="camera" playsinline muted></video>
+    <div class="scan-frame"><i></i><span>Place barcode inside the frame</span></div>
+    <div id="scanStatus" class="scan-status">Starting camera…</div>
+  </div>
+  <form id="manualForm" class="manual-barcode">
+    <label class="field"><span>Or enter barcode</span><input id="barcodeInput" inputmode="numeric" pattern="[0-9]*" placeholder="0123456789012" required></label>
+    <button class="save-button">Look up</button>
+  </form>
+  <p class="scan-help">Camera scanning requires HTTPS when opened from another device. Manual entry always works.</p>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+const video = document.getElementById('camera');
+const statusBox = document.getElementById('scanStatus');
+let busy = false;
+
+async function useBarcode(code) {
+  if (busy) return;
+  busy = true;
+  statusBox.textContent = 'Looking up product…';
+  try {
+    const response = await fetch('/api/barcode/' + encodeURIComponent(code));
+    const product = await response.json();
+    const params = new URLSearchParams({barcode: product.barcode || code});
+    if (product.found) {
+      params.set('name', product.name || '');
+      params.set('category', product.category || 'other');
+      params.set('unit', product.unit || 'item');
+      params.set('image_url', product.image_url || '');
+    }
+    window.location.href = '/items/new?' + params.toString();
+  } catch (error) {
+    statusBox.textContent = 'Could not look that up. Try manual entry again.';
+    busy = false;
+  }
+}
+
+document.getElementById('manualForm').addEventListener('submit', event => {
+  event.preventDefault();
+  useBarcode(document.getElementById('barcodeInput').value.trim());
+});
+
+async function startScanner() {
+  if (!('BarcodeDetector' in window) || !navigator.mediaDevices?.getUserMedia) {
+    statusBox.textContent = 'Camera scanning is not supported here. Enter the barcode below.';
+    return;
+  }
+  try {
+    const supported = await BarcodeDetector.getSupportedFormats();
+    const formats = ['ean_13', 'ean_8', 'upc_a', 'upc_e'].filter(format => supported.includes(format));
+    const detector = new BarcodeDetector({formats});
+    video.srcObject = await navigator.mediaDevices.getUserMedia({video: {facingMode: {ideal: 'environment'}}});
+    await video.play();
+    statusBox.textContent = 'Ready to scan';
+    const scan = async () => {
+      if (!busy) {
+        const codes = await detector.detect(video).catch(() => []);
+        if (codes.length) return useBarcode(codes[0].rawValue);
+      }
+      requestAnimationFrame(scan);
+    };
+    scan();
+  } catch (error) {
+    statusBox.textContent = 'Camera unavailable. Allow access or enter the barcode below.';
+  }
+}
+startScanner();
+</script>
+{% endblock %}

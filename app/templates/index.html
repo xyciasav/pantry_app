@@ -13,7 +13,7 @@
   <label class="search"><span>⌕</span><input name="q" value="{{ filters.q }}" placeholder="Search your kitchen…"></label>
   <select name="location" onchange="this.form.submit()">
     <option value="all">Everywhere</option>
-    {% for value in ['pantry', 'fridge', 'freezer'] %}<option value="{{ value }}" {% if filters.location == value %}selected{% endif %}>{{ value|title }}</option>{% endfor %}
+    {% for location in locations %}<option value="{{ location.id }}" {% if filters.location == location.id|string %}selected{% endif %}>{{ location.name }}</option>{% endfor %}
   </select>
   <select name="category" onchange="this.form.submit()">
     <option value="all">All categories</option>
@@ -27,7 +27,7 @@
   {% for item in items %}
   <article class="item-card {{ item.state }}">
     <a class="edit-link" href="/items/{{ item.id }}/edit" aria-label="Edit {{ item.name }}">•••</a>
-    <div class="item-visual category-{{ item.category }}"><span>{{ item.icon }}</span><em>{{ item.location }}</em></div>
+    <div class="item-visual category-{{ item.category }}">{% if item.image_url %}<img src="{{ item.image_url }}" alt="{{ item.name }}">{% else %}<span>{{ item.icon }}</span>{% endif %}<em>{{ item.location_name or item.location }}</em></div>
     <div class="item-body">
       <div class="item-title"><div><small>{{ item.category_label }}</small><h2>{{ item.name }}</h2></div>
         {% if item.state == 'expired' %}<span class="badge danger">Expired</span>
@@ -51,4 +51,3 @@
 <section class="empty"><div>🫙</div><h2>Your shelves are looking empty</h2><p>Add your first item to start tracking what you have.</p><a class="add-button" href="/items/new">＋ Add first item</a></section>
 {% endif %}
 {% endblock %}
-

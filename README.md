@@ -28,8 +28,16 @@ The container continues to listen internally on port `8000`; only the host-facin
 ## Features
 
 - Grocery-style inventory cards for pantry, fridge, and freezer
+- Unlimited named storage locations for multiple fridges, freezers, and pantries
+- Phone camera barcode scanning with Open Food Facts product lookup
 - One-tap quantity adjustment
 - Purchase and expiration dates
 - Low-stock thresholds and attention indicators
 - Search, category filtering, and responsive mobile layout
 - SQLite persistence and a Docker health check
+
+## Barcode scanning
+
+Open **Scan** from your phone, allow camera access, and point it at a UPC or EAN barcode. Shelf Life looks up the product through Open Food Facts and prefills the add-item form. Unknown products can still be entered manually.
+
+Browsers require a secure HTTPS connection for camera access when the app is opened from another device. Put the Portainer service behind your usual HTTPS reverse proxy. Manual barcode entry works without camera access.

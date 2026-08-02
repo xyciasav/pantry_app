@@ -13,10 +13,13 @@
 <body>
   <header class="topbar">
     <a class="brand" href="/"><span class="brand-mark">S</span><span>Shelf Life<small>Pantry & fridge</small></span></a>
-    <a class="add-button" href="/items/new"><span>＋</span> Add item</a>
+    <nav class="top-actions">
+      <a class="secondary-button" href="/locations">Locations</a>
+      <a class="scan-button" href="/scan">▣ Scan</a>
+      <a class="add-button" href="/items/new"><span>＋</span> Add item</a>
+    </nav>
   </header>
   <main>{% block content %}{% endblock %}</main>
   {% block scripts %}{% endblock %}
 </body>
 </html>
-
