@@ -45,11 +45,11 @@ Changing the password or signing key immediately invalidates existing sessions. 
 
 ### Version and image name
 
-The default Docker image is named `shelf-life:1.4.2`, and the same version appears in the website header, footer, and `/health` response.
+The default Docker image is named `shelf-life:1.5.0`, and the same version appears in the website header, footer, and `/health` response.
 
 Portainer stack variables can override these values:
 
-- `PANTRY_VERSION=1.4.2` controls the Docker tag and displayed website version.
+- `PANTRY_VERSION=1.5.0` controls the Docker tag and displayed website version.
 - `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
 
 For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.
@@ -60,7 +60,7 @@ For each release, change `PANTRY_VERSION` to the new version before rebuilding t
 - Unlimited named storage locations for multiple fridges, freezers, and pantries
 - Per-item stock split across multiple locations, with separate opened-package counts
 - Login protection for the entire inventory and API
-- Combine duplicate or like-product cards while preserving stock and source details
+- Group similar products into one dashboard total while preserving each brand, barcode, location, and expiration
 - Phone camera barcode scanning with Open Food Facts product lookup
 - One-tap quantity adjustment
 - Purchase and expiration dates

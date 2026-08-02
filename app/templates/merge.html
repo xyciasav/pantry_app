@@ -1,17 +1,18 @@
 {% extends "base.html" %}
-{% block title %}Combine {{ item.name }} · Shelf Life{% endblock %}
+{% block title %}Group {{ item.name }} · Shelf Life{% endblock %}
 {% block content %}
 <section class="form-shell merge-shell">
   <a class="back" href="/items/{{ item.id }}/edit">← Back to {{ item.name }}</a>
-  <div class="form-heading"><p class="eyebrow">COMBINE LIKE PRODUCTS</p><h1>Keep “{{ item.name }}”</h1><p>Choose another card to fold into this one. Stock and opened counts will be added together by location.</p></div>
+  <div class="form-heading"><p class="eyebrow">GROUP SIMILAR PRODUCTS</p><h1>{{ item.name }}</h1><p>Show a combined total while keeping every brand, barcode, location, and expiration separate.</p></div>
   {% if candidates %}
-  <form class="item-form merge-form" method="post" action="/items/{{ item.id }}/merge" onsubmit="return confirm('Combine the selected item into {{ item.name }}? This removes the other card.')">
-    <label class="field wide"><span>Item to combine into {{ item.name }}</span><select name="source_id" required>{% for candidate in candidates %}<option value="{{ candidate.id }}">{{ candidate.name }} · {{ (candidate.total_quantity - candidate.opened_quantity)|int if (candidate.total_quantity - candidate.opened_quantity) == (candidate.total_quantity - candidate.opened_quantity)|int else (candidate.total_quantity - candidate.opened_quantity) }} unopened{% if candidate.opened_quantity %} + {{ candidate.opened_quantity|int if candidate.opened_quantity == candidate.opened_quantity|int else candidate.opened_quantity }} open{% endif %}{% if candidate.barcode %} · {{ candidate.barcode }}{% endif %}</option>{% endfor %}</select></label>
-    <div class="merge-explainer wide"><strong>What happens</strong><span>“{{ item.name }}” stays. The selected card is removed after its stock is added. Its name, barcode, and notes are saved in this item’s notes, and the earliest expiration date is kept.</span></div>
-    <div class="form-actions wide"><button class="save-button" type="submit">Combine items</button><a href="/items/{{ item.id }}/edit">Cancel</a></div>
+  <form class="item-form merge-form" method="post" action="/items/{{ item.id }}/group">
+    <label class="field wide"><span>Summary card name</span><input name="group_name" value="{{ current_group.name if current_group else item.name }}" placeholder="Green Beans" required></label>
+    <label class="field wide"><span>Add this separate item</span><select name="source_id" required>{% for candidate in candidates %}<option value="{{ candidate.id }}">{{ candidate.name }} · {{ (candidate.total_quantity - candidate.opened_quantity)|int if (candidate.total_quantity - candidate.opened_quantity) == (candidate.total_quantity - candidate.opened_quantity)|int else (candidate.total_quantity - candidate.opened_quantity) }} unopened{% if candidate.opened_quantity %} + {{ candidate.opened_quantity|int if candidate.opened_quantity == candidate.opened_quantity|int else candidate.opened_quantity }} open{% endif %}{% if candidate.expires_on %} · expires {{ candidate.expires_on }}{% endif %}</option>{% endfor %}</select></label>
+    <div class="merge-explainer wide"><strong>Nothing is merged or deleted</strong><span>The dashboard gets one total card. Both items remain editable records with their own brands, quantities, barcodes, locations, and expiration dates.</span></div>
+    <div class="form-actions wide"><button class="save-button" type="submit">Create group</button><a href="/items/{{ item.id }}/edit">Cancel</a></div>
   </form>
   {% else %}
-  <section class="empty"><div>🥫</div><h2>Nothing else to combine</h2><p>Add another item first, then return here.</p><a class="add-button" href="/items/new">＋ Add item</a></section>
+  <section class="empty"><div>🥫</div><h2>Nothing else to group</h2><p>Add the other brand as a separate item first, then return here.</p><a class="add-button" href="/items/new">＋ Add item</a></section>
   {% endif %}
 </section>
 {% endblock %}

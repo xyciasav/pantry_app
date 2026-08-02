@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}{{ group.name }} · Shelf Life{% endblock %}
+{% block content %}
+<section class="form-shell group-shell">
+  <a class="back" href="/">← Back to kitchen</a>
+  <div class="form-heading"><p class="eyebrow">PRODUCT GROUP</p><h1>{{ group.name }}</h1><p>{{ variants|length }} separate products contribute to this dashboard total.</p></div>
+  <div class="variant-list">
+    {% for variant in variants %}
+    <article class="variant-row">
+      <div><small>{{ variant.category_label }}</small><h2>{{ variant.name }}</h2>{% if variant.barcode %}<span>Barcode {{ variant.barcode }}</span>{% endif %}</div>
+      <div class="variant-count"><strong>{{ variant.unopened_quantity|int if variant.unopened_quantity == variant.unopened_quantity|int else variant.unopened_quantity }}</strong><span>unopened</span>{% if variant.opened_quantity %}<b>{{ variant.opened_quantity|int if variant.opened_quantity == variant.opened_quantity|int else variant.opened_quantity }} open</b>{% endif %}</div>
+      <div class="variant-expiry"><small>EXPIRES</small><span>{{ variant.expires_on or 'Not set' }}</span></div>
+      <div class="variant-actions"><a class="secondary-button" href="/items/{{ variant.id }}/edit">Edit</a><form method="post" action="/items/{{ variant.id }}/ungroup"><button type="submit">Remove from group</button></form></div>
+    </article>
+    {% endfor %}
+  </div>
+  <div class="group-actions"><a class="add-button" href="/items/{{ variants[0].id }}/group">＋ Add another brand</a></div>
+</section>
+{% endblock %}

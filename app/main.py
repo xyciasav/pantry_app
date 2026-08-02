@@ -26,7 +26,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.4.2")
+APP_VERSION = os.getenv("APP_VERSION", "1.5.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -187,11 +187,21 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS product_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         columns = {row[1] for row in conn.execute("PRAGMA table_info(items)")}
         for name, definition in {
             "location_id": "INTEGER REFERENCES locations(id)",
             "barcode": "TEXT",
             "image_url": "TEXT",
+            "group_id": "INTEGER REFERENCES product_groups(id) ON DELETE SET NULL",
         }.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE items ADD COLUMN {name} {definition}")
@@ -334,8 +344,8 @@ def home(request: Request, location: str = "all", category: str = "all", q: str 
         clauses.append("items.category = ?")
         params.append(category)
     if q.strip():
-        clauses.append("items.name LIKE ?")
-        params.append(f"%{q.strip()}%")
+        clauses.append("(items.name LIKE ? OR EXISTS (SELECT 1 FROM product_groups search_group WHERE search_group.id = items.group_id AND search_group.name LIKE ?))")
+        params.extend((f"%{q.strip()}%", f"%{q.strip()}%"))
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with closing(db()) as conn:
         rows = conn.execute(
@@ -357,6 +367,7 @@ def home(request: Request, location: str = "all", category: str = "all", q: str 
                FROM item_stocks JOIN locations ON locations.id = item_stocks.location_id
                WHERE item_stocks.quantity > 0 ORDER BY locations.name"""
         ).fetchall()
+        groups = [dict(row) for row in conn.execute("SELECT * FROM product_groups ORDER BY name").fetchall()]
     breakdowns: dict[int, list[dict]] = {}
     for stock in stock_rows:
         stock_view = dict(stock)
@@ -365,6 +376,31 @@ def home(request: Request, location: str = "all", category: str = "all", q: str 
     items = [view_item(row) for row in rows]
     for item in items:
         item["stocks"] = breakdowns.get(item["id"], [])
+        item["card_type"] = "item"
+    grouped_items: dict[int, list[dict]] = {}
+    for item in items:
+        if item.get("group_id"):
+            grouped_items.setdefault(item["group_id"], []).append(item)
+    visible_items = [item for item in items if not item.get("group_id")]
+    for group in groups:
+        variants = grouped_items.get(group["id"], [])
+        if not variants:
+            continue
+        total = sum(item["quantity"] for item in variants)
+        opened = sum(item["opened_quantity"] for item in variants)
+        unopened = sum(item["unopened_quantity"] for item in variants)
+        active_locations = len({stock["name"] for item in variants for stock in item["stocks"]})
+        expiry_variants = [item for item in variants if item["expires_on"] and item["quantity"] > 0]
+        earliest = min(expiry_variants, key=lambda item: item["expires_on"]) if expiry_variants else None
+        state = "out" if total <= 0 else (earliest["state"] if earliest and earliest["state"] in {"expired", "expiring"} else "low" if unopened <= sum(item["low_at"] for item in variants) else "good")
+        visible_items.append({
+            "id": group["id"], "card_type": "group", "name": group["name"], "category": variants[0]["category"],
+            "category_label": variants[0]["category_label"], "icon": variants[0]["icon"], "image_url": variants[0]["image_url"],
+            "quantity": total, "opened_quantity": opened, "unopened_quantity": unopened, "active_locations": active_locations,
+            "state": state, "days_left": earliest["days_left"] if earliest else None, "expires_on": earliest["expires_on"] if earliest else None,
+            "variants": variants,
+        })
+    items = sorted(visible_items, key=lambda item: (item["expires_on"] is None, item["expires_on"] or "", item["name"].lower()))
     counts = {
         "all": len(items),
         "attention": sum(i["state"] in {"out", "low", "expired", "expiring"} for i in items),
@@ -484,8 +520,8 @@ def item_stock_page(request: Request, item_id: int):
     return render(request, "stock.html", item=dict(item), stocks=stocks)
 
 
-@app.get("/items/{item_id}/merge", response_class=HTMLResponse)
-def merge_item_page(request: Request, item_id: int):
+@app.get("/items/{item_id}/group", response_class=HTMLResponse)
+def group_item_page(request: Request, item_id: int):
     with closing(db()) as conn:
         item = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
         if not item:
@@ -496,17 +532,23 @@ def merge_item_page(request: Request, item_id: int):
                 """SELECT items.*, COALESCE(SUM(item_stocks.quantity), 0) AS total_quantity,
                           COALESCE(SUM(item_stocks.opened), 0) AS opened_quantity
                    FROM items LEFT JOIN item_stocks ON item_stocks.item_id = items.id
-                   WHERE items.id != ?
+                   WHERE items.id != ? AND (items.group_id IS NULL OR items.group_id = ?)
                    GROUP BY items.id
                    ORDER BY CASE WHEN items.category = ? THEN 0 ELSE 1 END, items.name""",
-                (item_id, item["category"]),
+                (item_id, item["group_id"], item["category"]),
             )
         ]
-    return render(request, "merge.html", item=dict(item), candidates=candidates)
+        current_group = conn.execute("SELECT * FROM product_groups WHERE id = ?", (item["group_id"],)).fetchone() if item["group_id"] else None
+    return render(request, "merge.html", item=dict(item), candidates=candidates, current_group=dict(current_group) if current_group else None)
 
 
-@app.post("/items/{item_id}/merge")
-def merge_item(item_id: int, source_id: int = Form(...)):
+@app.get("/items/{item_id}/merge")
+def old_merge_redirect(item_id: int):
+    return RedirectResponse(f"/items/{item_id}/group", status_code=303)
+
+
+@app.post("/items/{item_id}/group")
+def group_item(item_id: int, source_id: int = Form(...), group_name: str = Form(...)):
     if item_id == source_id:
         raise HTTPException(400, "An item cannot be combined with itself")
     now = datetime.now().isoformat(timespec="seconds")
@@ -515,33 +557,47 @@ def merge_item(item_id: int, source_id: int = Form(...)):
         source = conn.execute("SELECT * FROM items WHERE id = ?", (source_id,)).fetchone()
         if not target or not source:
             raise HTTPException(404)
-        source_stocks = conn.execute("SELECT * FROM item_stocks WHERE item_id = ?", (source_id,)).fetchall()
-        for stock in source_stocks:
-            conn.execute(
-                """INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(item_id, location_id) DO UPDATE SET
-                     quantity = item_stocks.quantity + excluded.quantity,
-                     opened = item_stocks.opened + excluded.opened,
-                     updated_at = excluded.updated_at""",
-                (item_id, stock["location_id"], stock["quantity"], stock["opened"], now),
-            )
-        details = f"Combined from {source['name']}"
-        if source["barcode"]:
-            details += f" [barcode {source['barcode']}]"
-        if source["notes"]:
-            details += f": {source['notes']}"
-        merged_notes = "\n".join(part for part in (target["notes"].strip(), details) if part)
-        expirations = [value for value in (target["expires_on"], source["expires_on"]) if value]
-        purchase_dates = [value for value in (target["bought_on"], source["bought_on"]) if value]
-        total = conn.execute("SELECT COALESCE(SUM(quantity), 0) FROM item_stocks WHERE item_id = ?", (item_id,)).fetchone()[0]
-        conn.execute(
-            """UPDATE items SET quantity=?, low_at=?, bought_on=?, expires_on=?, notes=?,
-                     barcode=?, image_url=?, updated_at=? WHERE id=?""",
-            (total, max(target["low_at"], source["low_at"]), min(purchase_dates) if purchase_dates else None, min(expirations) if expirations else None, merged_notes, target["barcode"] or source["barcode"], target["image_url"] or source["image_url"], now, item_id),
-        )
-        conn.execute("DELETE FROM item_stocks WHERE item_id = ?", (source_id,))
-        conn.execute("DELETE FROM items WHERE id = ?", (source_id,))
+        name = group_name.strip()
+        if not name:
+            raise HTTPException(400, "A group name is required")
+        group_id = target["group_id"] or source["group_id"]
+        if group_id:
+            conn.execute("UPDATE product_groups SET name = ? WHERE id = ?", (name, group_id))
+        else:
+            group_id = conn.execute("INSERT INTO product_groups (name, created_at) VALUES (?, ?)", (name, now)).lastrowid
+        conn.execute("UPDATE items SET group_id=?, updated_at=? WHERE id IN (?, ?)", (group_id, now, item_id, source_id))
+        conn.commit()
+    return RedirectResponse(f"/groups/{group_id}", status_code=303)
+
+
+@app.get("/groups/{group_id}", response_class=HTMLResponse)
+def group_detail(request: Request, group_id: int):
+    with closing(db()) as conn:
+        group = conn.execute("SELECT * FROM product_groups WHERE id = ?", (group_id,)).fetchone()
+        if not group:
+            raise HTTPException(404)
+        rows = conn.execute(
+            """SELECT items.*, COALESCE(SUM(item_stocks.quantity), 0) AS total_quantity,
+                      COALESCE(SUM(item_stocks.opened), 0) AS opened_quantity
+               FROM items LEFT JOIN item_stocks ON item_stocks.item_id = items.id
+               WHERE items.group_id = ? GROUP BY items.id
+               ORDER BY CASE WHEN items.expires_on IS NULL THEN 1 ELSE 0 END, items.expires_on, items.name""",
+            (group_id,),
+        ).fetchall()
+    return render(request, "group.html", group=dict(group), variants=[view_item(row) for row in rows])
+
+
+@app.post("/items/{item_id}/ungroup")
+def ungroup_item(item_id: int):
+    with closing(db()) as conn:
+        item = conn.execute("SELECT group_id FROM items WHERE id = ?", (item_id,)).fetchone()
+        if not item:
+            raise HTTPException(404)
+        group_id = item["group_id"]
+        conn.execute("UPDATE items SET group_id=NULL WHERE id=?", (item_id,))
+        if group_id and conn.execute("SELECT COUNT(*) FROM items WHERE group_id=?", (group_id,)).fetchone()[0] < 2:
+            conn.execute("UPDATE items SET group_id=NULL WHERE group_id=?", (group_id,))
+            conn.execute("DELETE FROM product_groups WHERE id=?", (group_id,))
         conn.commit()
     return RedirectResponse("/", status_code=303)
 

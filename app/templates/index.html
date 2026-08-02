@@ -26,8 +26,8 @@
 <section class="grid">
   {% for item in items %}
   <article class="item-card {{ item.state }}">
-    <a class="edit-link" href="/items/{{ item.id }}/edit" aria-label="Edit {{ item.name }}">•••</a>
-    <div class="item-visual category-{{ item.category }}">{% if item.image_url %}<img src="{{ item.image_url }}" alt="{{ item.name }}">{% else %}<span>{{ item.icon }}</span>{% endif %}<em>{% if item.active_locations > 1 %}{{ item.active_locations }} locations{% else %}{{ item.location_name or 'No stock' }}{% endif %}</em></div>
+    <a class="edit-link" href="{% if item.card_type == 'group' %}/groups/{{ item.id }}{% else %}/items/{{ item.id }}/edit{% endif %}" aria-label="{% if item.card_type == 'group' %}View{% else %}Edit{% endif %} {{ item.name }}">•••</a>
+    <div class="item-visual category-{{ item.category }}">{% if item.image_url %}<img src="{{ item.image_url }}" alt="{{ item.name }}">{% else %}<span>{{ item.icon }}</span>{% endif %}<em>{% if item.card_type == 'group' %}{{ item.variants|length }} brands · {{ item.active_locations }} location{% if item.active_locations != 1 %}s{% endif %}{% elif item.active_locations > 1 %}{{ item.active_locations }} locations{% else %}{{ item.location_name or 'No stock' }}{% endif %}</em></div>
     <div class="item-body">
       <div class="item-title"><div><small>{{ item.category_label }}</small><h2>{{ item.name }}</h2></div>
         {% if item.state == 'expired' %}<span class="badge danger">Expired</span>
@@ -35,12 +35,20 @@
         {% elif item.state == 'out' %}<span class="badge danger">Out</span>
         {% elif item.state == 'low' %}<span class="badge low-badge">Low</span>{% endif %}
       </div>
-      <div class="quantity-row">
+      <div class="quantity-row {% if item.card_type == 'group' %}group-total{% endif %}">
+        {% if item.card_type == 'item' %}
         <form method="post" action="/items/{{ item.id }}/quantity"><input type="hidden" name="delta" value="-1"><button aria-label="Remove one">−</button></form>
+        {% endif %}
         <div><strong>{{ item.unopened_quantity|int if item.unopened_quantity == item.unopened_quantity|int else item.unopened_quantity }}</strong><span>unopened</span>{% if item.opened_quantity %}<b class="opened-count">{{ item.opened_quantity|int if item.opened_quantity == item.opened_quantity|int else item.opened_quantity }} open</b>{% endif %}</div>
+        {% if item.card_type == 'item' %}
         <form method="post" action="/items/{{ item.id }}/quantity"><input type="hidden" name="delta" value="1"><button aria-label="Add one">＋</button></form>
+        {% endif %}
       </div>
+      {% if item.card_type == 'group' %}
+      <a class="variant-breakdown" href="/groups/{{ item.id }}">{% for variant in item.variants %}<span><strong>{{ variant.unopened_quantity|int if variant.unopened_quantity == variant.unopened_quantity|int else variant.unopened_quantity }}</strong> {{ variant.name }}{% if variant.opened_quantity %} + {{ variant.opened_quantity|int if variant.opened_quantity == variant.opened_quantity|int else variant.opened_quantity }} open{% endif %}</span>{% endfor %}</a>
+      {% else %}
       <a class="stock-breakdown" href="/items/{{ item.id }}/stock">{% if item.stocks %}{% for stock in item.stocks %}<span>{{ stock.name }}: {{ stock.unopened|int if stock.unopened == stock.unopened|int else stock.unopened }} unopened{% if stock.opened %} + {{ stock.opened|int if stock.opened == stock.opened|int else stock.opened }} open{% endif %}</span>{% endfor %}{% else %}<span>Set stock locations</span>{% endif %}</a>
+      {% endif %}
       <div class="meta">
         {% if item.expires_on %}<span>◷ {% if item.days_left < 0 %}Expired {{ -item.days_left }}d ago{% elif item.days_left == 0 %}Expires today{% else %}Expires {{ item.expires_on }}{% endif %}</span>{% else %}<span>◷ No expiry set</span>{% endif %}
       </div>
