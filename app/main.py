@@ -26,7 +26,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.4.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.4.1")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -233,12 +233,13 @@ def view_item(row: sqlite3.Row) -> dict:
     item = dict(row)
     item["quantity"] = item.get("total_quantity", item.get("quantity", 0))
     item["opened_quantity"] = item.get("opened_quantity", 0)
+    item["unopened_quantity"] = max(0, item["quantity"] - item["opened_quantity"])
     today = date.today()
     expires = date.fromisoformat(item["expires_on"]) if item["expires_on"] else None
     days_left = (expires - today).days if expires else None
     if item["quantity"] <= 0:
         state = "out"
-    elif item["quantity"] <= item["low_at"]:
+    elif item["unopened_quantity"] <= item["low_at"]:
         state = "low"
     elif days_left is not None and days_left < 0:
         state = "expired"
@@ -338,7 +339,9 @@ def home(request: Request, location: str = "all", category: str = "all", q: str 
         ).fetchall()
     breakdowns: dict[int, list[dict]] = {}
     for stock in stock_rows:
-        breakdowns.setdefault(stock["item_id"], []).append(dict(stock))
+        stock_view = dict(stock)
+        stock_view["unopened"] = max(0, stock_view["quantity"] - stock_view["opened"])
+        breakdowns.setdefault(stock["item_id"], []).append(stock_view)
     items = [view_item(row) for row in rows]
     for item in items:
         item["stocks"] = breakdowns.get(item["id"], [])
@@ -372,6 +375,7 @@ def save_item(
     name: str = Form(...),
     category: str = Form("other"),
     location_id: int | None = Form(None),
+    unopened: float | None = Form(None),
     quantity: float | None = Form(None),
     opened: float = Form(0),
     unit: str = Form("item"),
@@ -382,7 +386,8 @@ def save_item(
     barcode: str = Form(""),
     image_url: str = Form(""),
 ):
-    if not name.strip() or low_at < 0 or (quantity is not None and quantity < 0) or opened < 0:
+    starting_unopened = unopened if unopened is not None else quantity
+    if not name.strip() or low_at < 0 or (starting_unopened is not None and starting_unopened < 0) or opened < 0:
         raise HTTPException(400, "Name is required and quantities cannot be negative")
     now = datetime.now().isoformat(timespec="seconds")
     with closing(db()) as conn:
@@ -392,16 +397,17 @@ def save_item(
                 (name.strip(), category if category in CATEGORIES else "other", unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), barcode.strip(), image_url.strip(), now, item_id),
             )
         else:
-            if location_id is None or quantity is None or opened > quantity:
-                raise HTTPException(400, "Choose a location and keep opened quantity at or below total quantity")
+            if location_id is None or starting_unopened is None:
+                raise HTTPException(400, "Choose a location and enter unopened and open quantities")
+            total_quantity = starting_unopened + opened
             location_row = conn.execute("SELECT kind FROM locations WHERE id = ?", (location_id,)).fetchone()
             if not location_row:
                 raise HTTPException(400, "Invalid storage location")
             cursor = conn.execute(
                 "INSERT INTO items (name, category, location, location_id, quantity, unit, low_at, bought_on, expires_on, notes, barcode, image_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (name.strip(), category if category in CATEGORIES else "other", location_row["kind"], location_id, quantity, unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), barcode.strip(), image_url.strip(), now, now),
+                (name.strip(), category if category in CATEGORIES else "other", location_row["kind"], location_id, total_quantity, unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), barcode.strip(), image_url.strip(), now, now),
             )
-            conn.execute("INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at) VALUES (?, ?, ?, ?, ?)", (cursor.lastrowid, location_id, quantity, opened, now))
+            conn.execute("INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at) VALUES (?, ?, ?, ?, ?)", (cursor.lastrowid, location_id, total_quantity, opened, now))
         conn.commit()
     return RedirectResponse("/", status_code=303)
 
@@ -412,7 +418,7 @@ def change_quantity(item_id: int, delta: float = Form(...)):
         now = datetime.now().isoformat(timespec="seconds")
         stock = conn.execute(
             """SELECT * FROM item_stocks WHERE item_id = ?
-               ORDER BY CASE WHEN opened > 0 THEN 0 ELSE 1 END, CASE WHEN quantity > 0 THEN 0 ELSE 1 END, id LIMIT 1""",
+               ORDER BY CASE WHEN quantity - opened > 0 THEN 0 ELSE 1 END, CASE WHEN opened > 0 THEN 0 ELSE 1 END, id LIMIT 1""",
             (item_id,),
         ).fetchone()
         if not stock:
@@ -421,8 +427,13 @@ def change_quantity(item_id: int, delta: float = Form(...)):
                 raise HTTPException(404)
             conn.execute("INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at) VALUES (?, ?, 0, 0, ?)", (item_id, item["location_id"], now))
             stock = conn.execute("SELECT * FROM item_stocks WHERE item_id = ? LIMIT 1", (item_id,)).fetchone()
-        new_quantity = max(0, stock["quantity"] + delta)
-        new_opened = max(0, stock["opened"] + delta) if delta < 0 and stock["opened"] > 0 else stock["opened"]
+        unopened = stock["quantity"] - stock["opened"]
+        if delta < 0 and unopened <= 0 and stock["opened"] > 0:
+            new_quantity = max(0, stock["quantity"] + delta)
+            new_opened = max(0, stock["opened"] + delta)
+        else:
+            new_quantity = max(stock["opened"], stock["quantity"] + delta)
+            new_opened = stock["opened"]
         new_opened = min(new_opened, new_quantity)
         cursor = conn.execute("UPDATE item_stocks SET quantity=?, opened=?, updated_at=? WHERE id=?", (new_quantity, new_opened, now, stock["id"]))
         total = conn.execute("SELECT COALESCE(SUM(quantity), 0) FROM item_stocks WHERE item_id = ?", (item_id,)).fetchone()[0]
@@ -462,7 +473,8 @@ def merge_item_page(request: Request, item_id: int):
         candidates = [
             dict(row)
             for row in conn.execute(
-                """SELECT items.*, COALESCE(SUM(item_stocks.quantity), 0) AS total_quantity
+                """SELECT items.*, COALESCE(SUM(item_stocks.quantity), 0) AS total_quantity,
+                          COALESCE(SUM(item_stocks.opened), 0) AS opened_quantity
                    FROM items LEFT JOIN item_stocks ON item_stocks.item_id = items.id
                    WHERE items.id != ?
                    GROUP BY items.id
@@ -515,9 +527,10 @@ def merge_item(item_id: int, source_id: int = Form(...)):
 
 
 @app.post("/items/{item_id}/stock")
-def update_item_stock(item_id: int, location_id: int = Form(...), quantity: float = Form(0), opened: float = Form(0)):
-    if quantity < 0 or opened < 0 or opened > quantity:
-        raise HTTPException(400, "Opened quantity must be between zero and the total quantity")
+def update_item_stock(item_id: int, location_id: int = Form(...), unopened: float = Form(0), opened: float = Form(0)):
+    if unopened < 0 or opened < 0:
+        raise HTTPException(400, "Unopened and open quantities cannot be negative")
+    quantity = unopened + opened
     now = datetime.now().isoformat(timespec="seconds")
     with closing(db()) as conn:
         if not conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():

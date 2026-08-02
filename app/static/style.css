@@ -13,3 +13,4 @@
 @media(max-width:700px){.logout-form button{width:34px;height:34px}.login-card{padding:26px}.login-card h1{font-size:30px}}
 .merge-explainer{display:flex;flex-direction:column;gap:5px;background:#f5eadc;color:#755636;border-radius:13px;padding:15px}.merge-explainer span{font-size:12px;line-height:1.5}.merge-form{grid-template-columns:1fr}
 @media(max-width:700px){.toolbar .filter-button{display:block;grid-column:1/-1;height:46px;border:0;border-radius:12px;background:var(--green);color:#fff;font:700 14px "DM Sans";cursor:pointer}.search input::-webkit-search-cancel-button{margin-left:8px}}
+.stock-callout{border:1px solid #dce2c5}.stock-callout strong,.stock-callout span{display:block}.stock-callout .secondary-button{flex:0 0 auto;white-space:nowrap}.stock-location-form>*{min-width:0}.stock-number small{color:var(--muted);font-size:10px}.stock-location-name strong,.stock-location-name span{display:block}

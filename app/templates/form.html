@@ -13,15 +13,15 @@
     <label class="field"><span>Category</span><select name="category">{% for key, meta in categories.items() %}<option value="{{ key }}" {% if item and item.category == key %}selected{% endif %}>{{ meta[1] }} {{ meta[0] }}</option>{% endfor %}</select></label>
     {% if is_new %}
     <label class="field"><span>Stored in</span><select name="location_id">{% for location in locations %}<option value="{{ location.id }}">{{ location.name }} · {{ location.kind|title }}</option>{% endfor %}</select><small><a href="/locations">Manage locations</a></small></label>
-    <label class="field"><span>Total quantity</span><input type="number" min="0" step="0.25" name="quantity" value="1"></label>
-    <label class="field"><span>Already open</span><input type="number" min="0" step="0.25" name="opened" value="0"><small>Part of the total quantity, not extra.</small></label>
+    <label class="field"><span>Unopened</span><input type="number" min="0" step="0.25" name="unopened" value="1"><small>Sealed packages or containers.</small></label>
+    <label class="field"><span>Open</span><input type="number" min="0" step="0.25" name="opened" value="0"><small>Packages currently opened.</small></label>
     {% else %}
-    <div class="stock-callout wide"><div><strong>Stock by location</strong><span>Manage totals and opened packages separately.</span></div><a class="secondary-button" href="/items/{{ item.id }}/stock">Manage stock</a></div>
+    <div class="stock-callout wide"><div><strong>Stock by location</strong><span>Set unopened and open quantities for each place.</span></div><a class="secondary-button" href="/items/{{ item.id }}/stock">Manage stock</a></div>
     {% endif %}
     <label class="field"><span>Unit</span><input name="unit" value="{{ item.unit if item else 'item' }}" placeholder="item, can, lb…"></label>
     <label class="field"><span>Bought on</span><input type="date" name="bought_on" value="{{ item.bought_on if item and item.bought_on else today }}"></label>
     <label class="field"><span>Expires on</span><input type="date" name="expires_on" value="{{ item.expires_on if item and item.expires_on else '' }}"></label>
-    <label class="field wide"><span>Tell me when quantity reaches</span><input type="number" min="0" step="0.25" name="low_at" value="{{ item.low_at if item else 1 }}"><small>This creates a running-low alert.</small></label>
+    <label class="field wide"><span>Tell me when unopened reaches</span><input type="number" min="0" step="0.25" name="low_at" value="{{ item.low_at if item else 1 }}"><small>This creates a running-low alert based on sealed stock.</small></label>
     <label class="field wide"><span>Notes <em>optional</em></span><textarea name="notes" rows="3" placeholder="Brand, size, meal plans…">{{ item.notes if item else '' }}</textarea></label>
     <div class="form-actions wide"><button class="save-button" type="submit">{{ 'Add to kitchen' if is_new else 'Save changes' }}</button>{% if not is_new %}<a href="/items/{{ item.id }}/merge">Combine items</a>{% endif %}<a href="/">Cancel</a></div>
   </form>
