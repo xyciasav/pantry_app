@@ -29,7 +29,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.6.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.6.1")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -632,6 +632,19 @@ def group_detail(request: Request, group_id: int):
     return render(request, "group.html", group=dict(group), variants=[view_item(row) for row in rows])
 
 
+@app.post("/groups/{group_id}/rename")
+def rename_group(group_id: int, name: str = Form(...)):
+    clean_name = name.strip()
+    if not clean_name:
+        raise HTTPException(400, "Enter a group name")
+    with closing(db()) as conn:
+        cursor = conn.execute("UPDATE product_groups SET name=? WHERE id=?", (clean_name, group_id))
+        conn.commit()
+    if not cursor.rowcount:
+        raise HTTPException(404)
+    return RedirectResponse(f"/groups/{group_id}", status_code=303)
+
+
 @app.post("/items/{item_id}/ungroup")
 def ungroup_item(item_id: int):
     with closing(db()) as conn:
@@ -645,6 +658,43 @@ def ungroup_item(item_id: int):
             conn.execute("DELETE FROM product_groups WHERE id=?", (group_id,))
         conn.commit()
     return RedirectResponse("/", status_code=303)
+
+
+@app.get("/inventory", response_class=HTMLResponse)
+def inventory_list(request: Request, q: str = ""):
+    params: list[str] = []
+    where = ""
+    if q.strip():
+        where = "WHERE items.name LIKE ? OR product_groups.name LIKE ?"
+        params.extend((f"%{q.strip()}%", f"%{q.strip()}%"))
+    with closing(db()) as conn:
+        rows = conn.execute(
+            f"""SELECT items.*, product_groups.name AS group_name,
+                       COALESCE(SUM(item_stocks.quantity), 0) AS total_quantity,
+                       COALESCE(SUM(item_stocks.opened), 0) AS opened_quantity
+                FROM items
+                LEFT JOIN product_groups ON product_groups.id=items.group_id
+                LEFT JOIN item_stocks ON item_stocks.item_id=items.id
+                {where}
+                GROUP BY items.id""",
+            params,
+        ).fetchall()
+        stock_rows = conn.execute(
+            """SELECT item_stocks.item_id, locations.name, item_stocks.quantity, item_stocks.opened
+               FROM item_stocks JOIN locations ON locations.id=item_stocks.location_id
+               WHERE item_stocks.quantity > 0 ORDER BY locations.name"""
+        ).fetchall()
+    stocks: dict[int, list[dict]] = {}
+    for row in stock_rows:
+        stock = dict(row)
+        stock["unopened"] = stock["quantity"] - stock["opened"]
+        stocks.setdefault(stock.pop("item_id"), []).append(stock)
+    items = [view_item(row) for row in rows]
+    state_order = {"out": 0, "expired": 1, "low": 2, "expiring": 3, "good": 4}
+    for item in items:
+        item["stocks"] = stocks.get(item["id"], [])
+    items.sort(key=lambda item: (state_order[item["state"]], item["unopened_quantity"], item["expires_on"] is None, item["expires_on"] or "", item["name"].lower()))
+    return render(request, "list.html", items=items, q=q)
 
 
 @app.post("/items/{item_id}/stock")

@@ -4,6 +4,7 @@
 <section class="form-shell group-shell">
   <a class="back" href="/">← Back to kitchen</a>
   <div class="form-heading"><p class="eyebrow">PRODUCT GROUP</p><h1>{{ group.name }}</h1><p>{{ variants|length }} separate products contribute to this dashboard total.</p></div>
+  <form class="rename-group" method="post" action="/groups/{{ group.id }}/rename"><label class="field"><span>Group card name</span><input name="name" value="{{ group.name }}" required></label><button class="save-button">Rename group</button></form>
   <div class="variant-list">
     {% for variant in variants %}
     <article class="variant-row">
