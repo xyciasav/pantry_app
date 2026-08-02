@@ -39,17 +39,17 @@ Generate a signing key with `openssl rand -hex 32`, then save the output as `PAN
 Optional authentication settings:
 
 - `PANTRY_SESSION_HOURS=12` controls session lifetime.
-- `PANTRY_COOKIE_SECURE=true` requires HTTPS and should remain enabled for an online deployment. Set it to `false` only for local HTTP testing.
+- `PANTRY_COOKIE_SECURE=auto` (the default) detects HTTPS directly or through a reverse proxy's `X-Forwarded-Proto` header. You can force `true` for HTTPS-only access or `false` for HTTP-only local access.
 
 Changing the password or signing key immediately invalidates existing sessions. The login protects every inventory page and API route; only static assets and `/health` remain public for container health checks.
 
 ### Version and image name
 
-The default Docker image is named `shelf-life:1.4.1`, and the same version appears in the website header, footer, and `/health` response.
+The default Docker image is named `shelf-life:1.4.2`, and the same version appears in the website header, footer, and `/health` response.
 
 Portainer stack variables can override these values:
 
-- `PANTRY_VERSION=1.4.1` controls the Docker tag and displayed website version.
+- `PANTRY_VERSION=1.4.2` controls the Docker tag and displayed website version.
 - `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
 
 For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.

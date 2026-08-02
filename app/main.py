@@ -26,13 +26,14 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.4.1")
+APP_VERSION = os.getenv("APP_VERSION", "1.4.2")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
-COOKIE_SECURE = os.getenv("PANTRY_COOKIE_SECURE", "true").lower() not in {"0", "false", "no"}
+COOKIE_SECURE_MODE = os.getenv("PANTRY_COOKIE_SECURE", "auto").strip().lower()
 SESSION_SECONDS = int(float(os.getenv("PANTRY_SESSION_HOURS", "12")) * 3600)
-COOKIE_NAME = "__Host-pantry_session" if COOKIE_SECURE else "pantry_session"
+COOKIE_NAME = "pantry_session"
+LEGACY_COOKIE_NAME = "__Host-pantry_session"
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 
 CATEGORIES = {
@@ -103,18 +104,35 @@ def valid_session_token(token: str | None) -> bool:
         return False
 
 
+def request_uses_https(request: Request) -> bool:
+    if COOKIE_SECURE_MODE in {"1", "true", "yes"}:
+        return True
+    if COOKIE_SECURE_MODE in {"0", "false", "no"}:
+        return False
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+    return request.url.scheme == "https" or forwarded_proto == "https"
+
+
+def prevent_browser_cache(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     path = request.url.path
     public = path in {"/login", "/health"} or path.startswith("/static/")
-    if not public and not valid_session_token(request.cookies.get(COOKIE_NAME)):
+    session_token = request.cookies.get(COOKIE_NAME) or request.cookies.get(LEGACY_COOKIE_NAME)
+    if not public and not valid_session_token(session_token):
         if path.startswith("/api/"):
-            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+            return prevent_browser_cache(JSONResponse({"detail": "Authentication required"}, status_code=401))
         next_path = urllib.parse.quote(path if path.startswith("/") else "/", safe="/")
-        return RedirectResponse(f"/login?next={next_path}", status_code=303)
+        return prevent_browser_cache(RedirectResponse(f"/login?next={next_path}", status_code=303))
     response = await call_next(request)
     if not path.startswith("/static/"):
-        response.headers["Cache-Control"] = "no-store"
+        prevent_browser_cache(response)
     return response
 
 
@@ -264,7 +282,7 @@ def render(request: Request, name: str, **context) -> HTMLResponse:
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, next: str = "/", error: str = ""):
-    if valid_session_token(request.cookies.get(COOKIE_NAME)):
+    if valid_session_token(request.cookies.get(COOKIE_NAME) or request.cookies.get(LEGACY_COOKIE_NAME)):
         return RedirectResponse("/", status_code=303)
     safe_next = next if next.startswith("/") and not next.startswith("//") else "/"
     return render(request, "login.html", next_path=safe_next, error=error)
@@ -286,16 +304,18 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
     LOGIN_ATTEMPTS.pop(client, None)
     destination = next if next.startswith("/") and not next.startswith("//") else "/"
     response = RedirectResponse(destination, status_code=303)
-    response.set_cookie(COOKIE_NAME, create_session_token(), httponly=True, secure=COOKIE_SECURE, samesite="strict", path="/")
-    response.headers["Cache-Control"] = "no-store"
+    response.set_cookie(COOKIE_NAME, create_session_token(), httponly=True, secure=request_uses_https(request), samesite="lax", path="/")
+    response.delete_cookie(LEGACY_COOKIE_NAME, path="/", secure=True, httponly=True, samesite="strict")
+    prevent_browser_cache(response)
     return response
 
 
 @app.post("/logout")
-def logout():
+def logout(request: Request):
     response = RedirectResponse("/login", status_code=303)
-    response.delete_cookie(COOKIE_NAME, path="/", secure=COOKIE_SECURE, httponly=True, samesite="strict")
-    response.headers["Cache-Control"] = "no-store"
+    response.delete_cookie(COOKIE_NAME, path="/", secure=request_uses_https(request), httponly=True, samesite="lax")
+    response.delete_cookie(LEGACY_COOKIE_NAME, path="/", secure=True, httponly=True, samesite="strict")
+    prevent_browser_cache(response)
     return response
 
 
