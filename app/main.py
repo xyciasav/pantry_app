@@ -20,8 +20,9 @@ from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Security, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -29,7 +30,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.6.1")
+APP_VERSION = os.getenv("APP_VERSION", "1.6.2")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -75,7 +76,8 @@ ITEM_ART = {
     "frozen-food": ("frozen", "ice cream", "pizza"),
 }
 
-app = FastAPI(title="Shelf Life")
+app = FastAPI(title="Shelf Life", description="Read Shelf Life pantry inventory through the authenticated inventory endpoint.", version=APP_VERSION)
+api_bearer = HTTPBearer(auto_error=False, description="Enter the PANTRY_API_KEY configured in Portainer.")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 templates = Environment(
@@ -137,10 +139,16 @@ def valid_api_key(request: Request) -> bool:
     return bool(supplied) and hmac.compare_digest(supplied, API_KEY)
 
 
+def require_api_key(credentials: HTTPAuthorizationCredentials | None = Security(api_bearer)) -> None:
+    supplied = credentials.credentials if credentials and credentials.scheme.lower() == "bearer" else ""
+    if not API_KEY or not supplied or not hmac.compare_digest(supplied, API_KEY):
+        raise HTTPException(401, "A valid PANTRY_API_KEY Bearer token is required", headers={"WWW-Authenticate": "Bearer"})
+
+
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     path = request.url.path
-    public = path in {"/login", "/health"} or path.startswith("/static/")
+    public = path in {"/login", "/health", "/docs", "/openapi.json"} or path.startswith("/static/")
     session_token = request.cookies.get(COOKIE_NAME) or request.cookies.get(LEGACY_COOKIE_NAME)
     api_access = path == "/api/inventory" and valid_api_key(request)
     if not public and not api_access and not valid_session_token(session_token):
@@ -927,7 +935,7 @@ def barcode_lookup(code: str):
     }
 
 
-@app.get("/api/inventory")
+@app.get("/api/inventory", dependencies=[Depends(require_api_key)])
 def inventory_api():
     with closing(db()) as conn:
         rows = conn.execute(
