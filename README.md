@@ -27,11 +27,11 @@ The container continues to listen internally on port `8000`; only the host-facin
 
 ### Version and image name
 
-The default Docker image is named `shelf-life:1.0.1`, and the same version appears in the website header, footer, and `/health` response.
+The default Docker image is named `shelf-life:1.1.0`, and the same version appears in the website header, footer, and `/health` response.
 
 Portainer stack variables can override these values:
 
-- `PANTRY_VERSION=1.0.1` controls the Docker tag and displayed website version.
+- `PANTRY_VERSION=1.1.0` controls the Docker tag and displayed website version.
 - `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
 
 For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.
@@ -51,4 +51,4 @@ For each release, change `PANTRY_VERSION` to the new version before rebuilding t
 
 Open **Scan** from your phone, allow camera access, and point it at a UPC or EAN barcode. Shelf Life looks up the product through Open Food Facts and prefills the add-item form. Unknown products can still be entered manually.
 
-Browsers require a secure HTTPS connection for camera access when the app is opened from another device. Put the Portainer service behind your usual HTTPS reverse proxy. Manual barcode entry works without camera access.
+Browsers require a secure HTTPS connection for camera access when the app is opened from another device. Put the Portainer service behind your usual HTTPS reverse proxy. Shelf Life uses native barcode detection when available and a bundled ZXing scanner on other modern browsers. Manual barcode entry works without camera access.

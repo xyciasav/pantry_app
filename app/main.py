@@ -20,7 +20,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.0.1")
+APP_VERSION = os.getenv("APP_VERSION", "1.1.0")
 
 CATEGORIES = {
     "produce": ("Produce", "🥬"),
@@ -38,6 +38,7 @@ ITEM_ART = {
     "garlic": ("garlic",),
     "tomato": ("tomato", "tomatoes"),
     "broccoli": ("broccoli",),
+    "pepper": ("pepper", "peppers", "capsicum", "capsicums"),
     "apple": ("apple", "apples"),
     "banana": ("banana", "bananas"),
     "carrot": ("carrot", "carrots"),
@@ -50,16 +51,6 @@ ITEM_ART = {
     "pasta": ("pasta", "noodles", "spaghetti", "macaroni"),
     "chicken": ("chicken", "poultry", "turkey"),
     "frozen-food": ("frozen", "ice cream", "pizza"),
-}
-
-CATEGORY_ART = {
-    "produce": "apple",
-    "dairy": "milk",
-    "meat": "chicken",
-    "frozen": "frozen-food",
-    "pantry": "canned-food",
-    "bakery": "bread",
-    "drinks": "milk",
 }
 
 app = FastAPI(title="Shelf Life")
@@ -158,8 +149,7 @@ def item_art_url(name: str, category: str) -> str | None:
     for artwork, aliases in ITEM_ART.items():
         if any((" " in alias and alias in normalized) or alias in words for alias in aliases):
             return f"/static/items/{artwork}.webp"
-    fallback = CATEGORY_ART.get(category)
-    return f"/static/items/{fallback}.webp" if fallback else None
+    return None
 
 
 def view_item(row: sqlite3.Row) -> dict:

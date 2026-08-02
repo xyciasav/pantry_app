@@ -1,16 +1,16 @@
 services:
   pantry:
-    image: "${PANTRY_IMAGE_NAME:-shelf-life}:${PANTRY_VERSION:-1.0.1}"
+    image: "${PANTRY_IMAGE_NAME:-shelf-life}:${PANTRY_VERSION:-1.1.0}"
     build:
       context: .
       args:
-        APP_VERSION: "${PANTRY_VERSION:-1.0.1}"
+        APP_VERSION: "${PANTRY_VERSION:-1.1.0}"
     container_name: shelf-life
     restart: unless-stopped
     ports:
       - "${PANTRY_PORT:-8000}:8000"
     environment:
-      APP_VERSION: "${PANTRY_VERSION:-1.0.1}"
+      APP_VERSION: "${PANTRY_VERSION:-1.1.0}"
     volumes:
       - pantry-data:/data
 volumes:
