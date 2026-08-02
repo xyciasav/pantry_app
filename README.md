@@ -10,13 +10,20 @@ docker compose up -d --build
 
 Open `http://localhost:8000`. Inventory is stored in the `pantry-data` Docker volume.
 
+To use a different host port, set `PANTRY_PORT` before starting the stack. For example:
+
+```bash
+PANTRY_PORT=8085 docker compose up -d --build
+```
+
 ## Portainer stack
 
 1. Add this Git repository as a Portainer stack.
 2. Use `docker-compose.yml` as the compose path.
-3. Deploy the stack and open port `8000` on the Docker host.
+3. Optionally add a stack environment variable named `PANTRY_PORT` with the host port you want, such as `8085`. If omitted, it defaults to `8000`.
+4. Deploy the stack and open that port on the Docker host.
 
-For a different public port, change the first number in `8000:8000`.
+The container continues to listen internally on port `8000`; only the host-facing port changes.
 
 ## Features
 
