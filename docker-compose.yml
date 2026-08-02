@@ -1,0 +1,11 @@
+services:
+  pantry:
+    build: .
+    container_name: shelf-life
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - pantry-data:/data
+volumes:
+  pantry-data:

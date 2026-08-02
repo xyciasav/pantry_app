@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if item else 'Add' }} item · Shelf Life{% endblock %}
+{% block content %}
+<section class="form-shell">
+  <a class="back" href="/">← Back to kitchen</a>
+  <div class="form-heading"><p class="eyebrow">{{ 'UPDATE YOUR STOCK' if item else 'STOCK THE SHELF' }}</p><h1>{{ 'Edit item' if item else 'Add something new' }}</h1><p>Keep it quick—only the name is required.</p></div>
+  <form class="item-form" method="post" action="/items/save">
+    {% if item %}<input type="hidden" name="item_id" value="{{ item.id }}">{% endif %}
+    <label class="field wide"><span>Item name</span><input name="name" value="{{ item.name if item else '' }}" placeholder="e.g. Greek yogurt" required autofocus></label>
+    <label class="field"><span>Category</span><select name="category">{% for key, meta in categories.items() %}<option value="{{ key }}" {% if item and item.category == key %}selected{% endif %}>{{ meta[1] }} {{ meta[0] }}</option>{% endfor %}</select></label>
+    <label class="field"><span>Stored in</span><select name="location">{% for value in ['pantry', 'fridge', 'freezer'] %}<option value="{{ value }}" {% if item and item.location == value %}selected{% endif %}>{{ value|title }}</option>{% endfor %}</select></label>
+    <label class="field"><span>Quantity</span><input type="number" min="0" step="0.25" name="quantity" value="{{ item.quantity if item else 1 }}"></label>
+    <label class="field"><span>Unit</span><input name="unit" value="{{ item.unit if item else 'item' }}" placeholder="item, can, lb…"></label>
+    <label class="field"><span>Bought on</span><input type="date" name="bought_on" value="{{ item.bought_on if item and item.bought_on else today }}"></label>
+    <label class="field"><span>Expires on</span><input type="date" name="expires_on" value="{{ item.expires_on if item and item.expires_on else '' }}"></label>
+    <label class="field wide"><span>Tell me when quantity reaches</span><input type="number" min="0" step="0.25" name="low_at" value="{{ item.low_at if item else 1 }}"><small>This creates a running-low alert.</small></label>
+    <label class="field wide"><span>Notes <em>optional</em></span><textarea name="notes" rows="3" placeholder="Brand, size, meal plans…">{{ item.notes if item else '' }}</textarea></label>
+    <div class="form-actions wide"><button class="save-button" type="submit">{{ 'Save changes' if item else 'Add to kitchen' }}</button><a href="/">Cancel</a></div>
+  </form>
+  {% if item %}<form class="delete-form" method="post" action="/items/{{ item.id }}/delete" onsubmit="return confirm('Remove {{ item.name }}?')"><button>Remove this item</button></form>{% endif %}
+</section>
+{% endblock %}
+

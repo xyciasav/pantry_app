@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <div><p class="eyebrow">YOUR KITCHEN AT A GLANCE</p><h1>What’s on the shelf?</h1><p>Use what you have, waste less, and never run out of the good stuff.</p></div>
+  <div class="summary">
+    <div><strong>{{ counts.all }}</strong><span>items</span></div>
+    <div class="warn"><strong>{{ counts.expiring }}</strong><span>expiring</span></div>
+    <div class="low"><strong>{{ counts.low }}</strong><span>running low</span></div>
+  </div>
+</section>
+
+<form class="toolbar" method="get">
+  <label class="search"><span>⌕</span><input name="q" value="{{ filters.q }}" placeholder="Search your kitchen…"></label>
+  <select name="location" onchange="this.form.submit()">
+    <option value="all">Everywhere</option>
+    {% for value in ['pantry', 'fridge', 'freezer'] %}<option value="{{ value }}" {% if filters.location == value %}selected{% endif %}>{{ value|title }}</option>{% endfor %}
+  </select>
+  <select name="category" onchange="this.form.submit()">
+    <option value="all">All categories</option>
+    {% for key, meta in categories.items() %}<option value="{{ key }}" {% if filters.category == key %}selected{% endif %}>{{ meta[1] }} {{ meta[0] }}</option>{% endfor %}
+  </select>
+  <button class="filter-button">Filter</button>
+</form>
+
+{% if items %}
+<section class="grid">
+  {% for item in items %}
+  <article class="item-card {{ item.state }}">
+    <a class="edit-link" href="/items/{{ item.id }}/edit" aria-label="Edit {{ item.name }}">•••</a>
+    <div class="item-visual category-{{ item.category }}"><span>{{ item.icon }}</span><em>{{ item.location }}</em></div>
+    <div class="item-body">
+      <div class="item-title"><div><small>{{ item.category_label }}</small><h2>{{ item.name }}</h2></div>
+        {% if item.state == 'expired' %}<span class="badge danger">Expired</span>
+        {% elif item.state == 'expiring' %}<span class="badge warning">{{ item.days_left }}d left</span>
+        {% elif item.state == 'out' %}<span class="badge danger">Out</span>
+        {% elif item.state == 'low' %}<span class="badge low-badge">Low</span>{% endif %}
+      </div>
+      <div class="quantity-row">
+        <form method="post" action="/items/{{ item.id }}/quantity"><input type="hidden" name="delta" value="-1"><button aria-label="Remove one">−</button></form>
+        <div><strong>{{ item.quantity|int if item.quantity == item.quantity|int else item.quantity }}</strong><span>{{ item.unit }}{% if item.quantity != 1 %}s{% endif %}</span></div>
+        <form method="post" action="/items/{{ item.id }}/quantity"><input type="hidden" name="delta" value="1"><button aria-label="Add one">＋</button></form>
+      </div>
+      <div class="meta">
+        {% if item.expires_on %}<span>◷ {% if item.days_left < 0 %}Expired {{ -item.days_left }}d ago{% elif item.days_left == 0 %}Expires today{% else %}Expires {{ item.expires_on }}{% endif %}</span>{% else %}<span>◷ No expiry set</span>{% endif %}
+      </div>
+    </div>
+  </article>
+  {% endfor %}
+</section>
+{% else %}
+<section class="empty"><div>🫙</div><h2>Your shelves are looking empty</h2><p>Add your first item to start tracking what you have.</p><a class="add-button" href="/items/new">＋ Add first item</a></section>
+{% endif %}
+{% endblock %}
+
