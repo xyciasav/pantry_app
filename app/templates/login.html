@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#15352d">
+  <title>Log in · Shelf Life</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <div class="login-brand"><span class="brand-mark">S</span><span>Shelf Life <b class="version-badge">v{{ app_version }}</b><small>YOUR KITCHEN, KEPT PRIVATE</small></span></div>
+    <section class="login-card">
+      <p class="eyebrow">WELCOME BACK</p>
+      <h1>Log in to your kitchen</h1>
+      <p>Enter the credentials configured in your Portainer stack.</p>
+      {% if error %}<div class="login-error" role="alert">{{ error }}</div>{% endif %}
+      <form method="post" action="/login">
+        <input type="hidden" name="next" value="{{ next_path }}">
+        <label class="field"><span>Username</span><input name="username" autocomplete="username" required autofocus></label>
+        <label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>
+        <button class="save-button" type="submit">Log in</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

@@ -4,6 +4,12 @@ import os
 import sqlite3
 import json
 import re
+import base64
+import binascii
+import hashlib
+import hmac
+import secrets
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,7 +26,14 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.2.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.3.0")
+AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
+AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
+AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
+COOKIE_SECURE = os.getenv("PANTRY_COOKIE_SECURE", "true").lower() not in {"0", "false", "no"}
+SESSION_SECONDS = int(float(os.getenv("PANTRY_SESSION_HOURS", "12")) * 3600)
+COOKIE_NAME = "__Host-pantry_session" if COOKIE_SECURE else "pantry_session"
+LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 
 CATEGORIES = {
     "produce": ("Produce", "🥬"),
@@ -59,6 +72,50 @@ templates = Environment(
     loader=FileSystemLoader(BASE_DIR / "templates"),
     autoescape=select_autoescape(["html", "xml"]),
 )
+
+
+def auth_config_valid() -> None:
+    missing = [name for name, value in (("PANTRY_USERNAME", AUTH_USERNAME), ("PANTRY_PASSWORD", AUTH_PASSWORD), ("PANTRY_SECRET_KEY", AUTH_SECRET)) if not value]
+    if missing:
+        raise RuntimeError(f"Authentication is required. Set: {', '.join(missing)}")
+    if len(AUTH_SECRET) < 32:
+        raise RuntimeError("PANTRY_SECRET_KEY must be at least 32 characters")
+
+
+def create_session_token() -> str:
+    password_version = hashlib.sha256(AUTH_PASSWORD.encode()).hexdigest()[:16]
+    payload = f"{AUTH_USERNAME}|{password_version}|{int(time.time()) + SESSION_SECONDS}|{secrets.token_urlsafe(16)}"
+    signature = hmac.new(AUTH_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}|{signature}".encode()).decode()
+
+
+def valid_session_token(token: str | None) -> bool:
+    if not token:
+        return False
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode()).decode()
+        username, password_version, expires, nonce, signature = decoded.rsplit("|", 4)
+        payload = f"{username}|{password_version}|{expires}|{nonce}"
+        expected = hmac.new(AUTH_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        current_password_version = hashlib.sha256(AUTH_PASSWORD.encode()).hexdigest()[:16]
+        return username == AUTH_USERNAME and hmac.compare_digest(password_version, current_password_version) and int(expires) >= int(time.time()) and hmac.compare_digest(signature, expected)
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        return False
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    path = request.url.path
+    public = path in {"/login", "/health"} or path.startswith("/static/")
+    if not public and not valid_session_token(request.cookies.get(COOKIE_NAME)):
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+        next_path = urllib.parse.quote(path if path.startswith("/") else "/", safe="/")
+        return RedirectResponse(f"/login?next={next_path}", status_code=303)
+    response = await call_next(request)
+    if not path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def db() -> sqlite3.Connection:
@@ -150,6 +207,7 @@ def get_locations(conn: sqlite3.Connection | None = None) -> list[dict]:
 
 @app.on_event("startup")
 def startup() -> None:
+    auth_config_valid()
     init_db()
 
 
@@ -201,6 +259,43 @@ def view_item(row: sqlite3.Row) -> dict:
 def render(request: Request, name: str, **context) -> HTMLResponse:
     template = templates.get_template(name)
     return HTMLResponse(template.render(request=request, categories=CATEGORIES, locations=get_locations(), app_version=APP_VERSION, **context))
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, next: str = "/", error: str = ""):
+    if valid_session_token(request.cookies.get(COOKIE_NAME)):
+        return RedirectResponse("/", status_code=303)
+    safe_next = next if next.startswith("/") and not next.startswith("//") else "/"
+    return render(request, "login.html", next_path=safe_next, error=error)
+
+
+@app.post("/login")
+def login(request: Request, username: str = Form(...), password: str = Form(...), next: str = Form("/")):
+    client = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    recent = [attempt for attempt in LOGIN_ATTEMPTS.get(client, []) if now - attempt < 600]
+    if len(recent) >= 5:
+        return RedirectResponse("/login?error=Too+many+attempts.+Try+again+in+10+minutes.", status_code=303)
+    username_ok = hmac.compare_digest(username.encode(), AUTH_USERNAME.encode())
+    password_ok = hmac.compare_digest(password.encode(), AUTH_PASSWORD.encode())
+    if not (username_ok and password_ok):
+        recent.append(now)
+        LOGIN_ATTEMPTS[client] = recent
+        return RedirectResponse("/login?error=Incorrect+username+or+password.", status_code=303)
+    LOGIN_ATTEMPTS.pop(client, None)
+    destination = next if next.startswith("/") and not next.startswith("//") else "/"
+    response = RedirectResponse(destination, status_code=303)
+    response.set_cookie(COOKIE_NAME, create_session_token(), httponly=True, secure=COOKIE_SECURE, samesite="strict", path="/")
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.post("/logout")
+def logout():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(COOKIE_NAME, path="/", secure=COOKIE_SECURE, httponly=True, samesite="strict")
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/health")
