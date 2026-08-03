@@ -25,8 +25,8 @@
 {% if items %}
 <div class="category-sections">
   {% for section in category_sections %}
-  <section class="category-section" id="category-{{ section.key }}">
-    <div class="category-heading"><div><span>{{ section.icon }}</span><div><h2>{{ section.label }}</h2><p>{{ section["items"]|length }} item{% if section["items"]|length != 1 %}s{% endif %}</p></div></div><a href="/?category={{ section.key }}">View only</a></div>
+  <details class="category-section" id="category-{{ section.key }}" {% if filters.category != 'all' or filters.q %}open{% endif %}>
+    <summary class="category-heading"><span class="category-icon">{{ section.icon }}</span><span class="category-title"><strong>{{ section.label }}</strong><small>{{ section["items"]|length }} item{% if section["items"]|length != 1 %}s{% endif %}</small></span><span class="category-chevron" aria-hidden="true">⌄</span></summary>
     <div class="grid">
   {% for item in section["items"] %}
   <article class="item-card {{ item.state }}">
@@ -60,7 +60,7 @@
   </article>
   {% endfor %}
     </div>
-  </section>
+  </details>
   {% endfor %}
 </div>
 {% else %}
