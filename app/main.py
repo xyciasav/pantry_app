@@ -30,7 +30,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.6.6")
+APP_VERSION = os.getenv("APP_VERSION", "1.6.7")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -239,6 +239,7 @@ def init_db() -> None:
             "location_id": "INTEGER REFERENCES locations(id)",
             "barcode": "TEXT",
             "image_url": "TEXT",
+            "ingredients": "TEXT NOT NULL DEFAULT ''",
             "group_id": "INTEGER REFERENCES product_groups(id) ON DELETE SET NULL",
         }.items():
             if name not in columns:
@@ -466,9 +467,33 @@ def home(request: Request, location: str = "all", category: str = "all", q: str 
 
 
 @app.get("/items/new", response_class=HTMLResponse)
-def new_item(request: Request, name: str = "", barcode: str = "", image_url: str = "", category: str = "other", unit: str = "item"):
-    item = {"name": name, "barcode": barcode, "image_url": image_url, "category": category, "unit": unit} if any((name, barcode, image_url)) else None
+def new_item(request: Request, name: str = "", barcode: str = "", image_url: str = "", category: str = "other", unit: str = "item", ingredients: str = ""):
+    item = {"name": name, "barcode": barcode, "image_url": image_url, "category": category, "unit": unit, "ingredients": ingredients} if any((name, barcode, image_url, ingredients)) else None
     return render(request, "form.html", item=item, is_new=True, today=date.today().isoformat())
+
+
+@app.get("/items/{item_id}", response_class=HTMLResponse)
+def item_detail(request: Request, item_id: int, return_to: str = "/"):
+    with closing(db()) as conn:
+        row = conn.execute(
+            """SELECT items.*, COALESCE(SUM(item_stocks.quantity), 0) AS total_quantity,
+                      COALESCE(SUM(item_stocks.opened), 0) AS opened_quantity
+               FROM items LEFT JOIN item_stocks ON item_stocks.item_id=items.id
+               WHERE items.id=? GROUP BY items.id""",
+            (item_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404)
+        stocks = [dict(stock) for stock in conn.execute(
+            """SELECT locations.name, locations.kind, item_stocks.quantity, item_stocks.opened
+               FROM item_stocks JOIN locations ON locations.id=item_stocks.location_id
+               WHERE item_stocks.item_id=? AND item_stocks.quantity > 0 ORDER BY locations.name""",
+            (item_id,),
+        )]
+    item = view_item(row)
+    for stock in stocks:
+        stock["unopened"] = max(0, stock["quantity"] - stock["opened"])
+    return render(request, "detail.html", item=item, stocks=stocks, return_to=safe_return_path(return_to))
 
 
 @app.get("/items/{item_id}/edit", response_class=HTMLResponse)
@@ -494,6 +519,7 @@ async def save_item(
     bought_on: str | None = Form(None),
     expires_on: str | None = Form(None),
     notes: str = Form(""),
+    ingredients: str = Form(""),
     barcode: str = Form(""),
     image_url: str = Form(""),
     generic_image: str = Form(""),
@@ -524,8 +550,8 @@ async def save_item(
     with closing(db()) as conn:
         if item_id:
             conn.execute(
-                "UPDATE items SET name=?, category=?, unit=?, low_at=?, bought_on=?, expires_on=?, notes=?, barcode=?, image_url=?, updated_at=? WHERE id=?",
-                (name.strip(), category if category in CATEGORIES else "other", unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), barcode.strip(), saved_image_url, now, item_id),
+                "UPDATE items SET name=?, category=?, unit=?, low_at=?, bought_on=?, expires_on=?, notes=?, ingredients=?, barcode=?, image_url=?, updated_at=? WHERE id=?",
+                (name.strip(), category if category in CATEGORIES else "other", unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), ingredients.strip(), barcode.strip(), saved_image_url, now, item_id),
             )
         else:
             if location_id is None or starting_unopened is None:
@@ -535,8 +561,8 @@ async def save_item(
             if not location_row:
                 raise HTTPException(400, "Invalid storage location")
             cursor = conn.execute(
-                "INSERT INTO items (name, category, location, location_id, quantity, unit, low_at, bought_on, expires_on, notes, barcode, image_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (name.strip(), category if category in CATEGORIES else "other", location_row["kind"], location_id, total_quantity, unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), barcode.strip(), saved_image_url, now, now),
+                "INSERT INTO items (name, category, location, location_id, quantity, unit, low_at, bought_on, expires_on, notes, ingredients, barcode, image_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (name.strip(), category if category in CATEGORIES else "other", location_row["kind"], location_id, total_quantity, unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), ingredients.strip(), barcode.strip(), saved_image_url, now, now),
             )
             conn.execute("INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at) VALUES (?, ?, ?, ?, ?)", (cursor.lastrowid, location_id, total_quantity, opened, now))
         conn.commit()
@@ -983,7 +1009,7 @@ def barcode_lookup(code: str):
             "opened": pantry_item["opened_quantity"],
             "unit": pantry_item["unit"],
         }
-    fields = "code,product_name,brands,quantity,image_front_url,categories_tags"
+    fields = "code,product_name,brands,quantity,image_front_url,categories_tags,ingredients_text,ingredients_text_en"
     url = f"https://world.openfoodfacts.org/api/v3/product/{digits}?fields={urllib.parse.quote(fields)}"
     request = urllib.request.Request(
         url,
@@ -1008,6 +1034,7 @@ def barcode_lookup(code: str):
         "category": infer_category(product.get("categories_tags") or []),
         "unit": quantity or "item",
         "image_url": product.get("image_front_url") or "",
+        "ingredients": product.get("ingredients_text") or product.get("ingredients_text_en") or "",
     }
 
 
@@ -1042,6 +1069,6 @@ def inventory_api():
             "category": item["category_label"], "unopened": item["unopened_quantity"],
             "open": item["opened_quantity"], "total": item["quantity"], "unit": item["unit"],
             "bought_on": item["bought_on"], "expires_on": item["expires_on"], "state": item["state"],
-            "barcode": item.get("barcode"), "notes": item["notes"], "locations": stocks.get(item["id"], []),
+            "barcode": item.get("barcode"), "notes": item["notes"], "ingredients": item.get("ingredients", ""), "locations": stocks.get(item["id"], []),
         })
     return {"version": APP_VERSION, "generated_at": datetime.now().isoformat(timespec="seconds"), "items": inventory}

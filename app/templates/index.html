@@ -31,9 +31,9 @@
   {% for item in section["items"] %}
   <article class="item-card {{ item.state }}">
     <a class="edit-link" href="{% if item.card_type == 'group' %}/groups/{{ item.id }}{% else %}/items/{{ item.id }}/edit?return_to={{ return_to|urlencode }}{% endif %}" aria-label="{% if item.card_type == 'group' %}View{% else %}Edit{% endif %} {{ item.name }}">•••</a>
-    <div class="item-visual category-{{ item.category }}">{% if item.image_url %}<img src="{{ item.image_url }}" alt="{{ item.name }}">{% else %}<span>{{ item.icon }}</span>{% endif %}<em>{% if item.card_type == 'group' %}{{ item.variants|length }} brands · {{ item.active_locations }} location{% if item.active_locations != 1 %}s{% endif %}{% elif item.active_locations > 1 %}{{ item.active_locations }} locations{% else %}{{ item.location_name or 'No stock' }}{% endif %}</em></div>
+    {% if item.card_type == 'item' %}<a class="item-detail-link" href="/items/{{ item.id }}?return_to={{ return_to|urlencode }}">{% endif %}<div class="item-visual category-{{ item.category }}">{% if item.image_url %}<img src="{{ item.image_url }}" alt="{{ item.name }}">{% else %}<span>{{ item.icon }}</span>{% endif %}<em>{% if item.card_type == 'group' %}{{ item.variants|length }} brands · {{ item.active_locations }} location{% if item.active_locations != 1 %}s{% endif %}{% elif item.active_locations > 1 %}{{ item.active_locations }} locations{% else %}{{ item.location_name or 'No stock' }}{% endif %}</em></div>{% if item.card_type == 'item' %}</a>{% endif %}
     <div class="item-body">
-      <div class="item-title"><div><small>{{ item.category_label }}</small><h2>{{ item.name }}</h2></div>
+      <div class="item-title"><div><small>{{ item.category_label }}</small><h2>{% if item.card_type == 'item' %}<a class="item-name-link" href="/items/{{ item.id }}?return_to={{ return_to|urlencode }}">{{ item.name }}</a>{% else %}{{ item.name }}{% endif %}</h2></div>
         {% if item.state == 'expired' %}<span class="badge danger">Expired</span>
         {% elif item.state == 'expiring' %}<span class="badge warning">{{ item.days_left }}d left</span>
         {% elif item.state == 'out' %}<span class="badge danger">Out</span>

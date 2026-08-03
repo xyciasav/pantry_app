@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}{{ item.name }} · Shelf Life{% endblock %}
+{% block content %}
+<section class="detail-shell">
+  <a class="back" href="{{ return_to }}">← Back to previous view</a>
+  <div class="detail-hero">
+    <div class="detail-photo category-{{ item.category }}">{% if item.image_url %}<img src="{{ item.image_url }}" alt="{{ item.name }}">{% else %}<span>{{ item.icon }}</span>{% endif %}</div>
+    <div class="detail-summary">
+      <p class="eyebrow">{{ item.icon }} {{ item.category_label|upper }}</p>
+      <h1>{{ item.name }}</h1>
+      <p class="detail-subtitle">{% if item.state == 'out' %}Out of stock{% elif item.state == 'low' %}Running low{% elif item.state == 'expired' %}Expired{% elif item.state == 'expiring' %}Expiring soon{% else %}Stock looks good{% endif %}</p>
+      <div class="detail-total"><div><strong>{{ item.unopened_quantity|int if item.unopened_quantity == item.unopened_quantity|int else item.unopened_quantity }}</strong><span>Unopened</span></div><div><strong>{{ item.opened_quantity|int if item.opened_quantity == item.opened_quantity|int else item.opened_quantity }}</strong><span>Open</span></div></div>
+      <div class="detail-actions"><a class="save-button" href="/items/{{ item.id }}/edit?return_to={{ return_to|urlencode }}">Edit item</a><a class="secondary-button" href="/items/{{ item.id }}/stock?return_to={{ return_to|urlencode }}">Manage stock</a></div>
+    </div>
+  </div>
+  <div class="detail-grid">
+    <section class="detail-panel"><h2>Item details</h2><dl class="detail-fields"><div><dt>Unit</dt><dd>{{ item.unit }}</dd></div><div><dt>Low alert at</dt><dd>{{ item.low_at }}</dd></div><div><dt>Bought</dt><dd>{{ item.bought_on or 'Not set' }}</dd></div><div><dt>Expires</dt><dd>{{ item.expires_on or 'Not set' }}</dd></div><div><dt>Barcode</dt><dd>{{ item.barcode or 'Not set' }}</dd></div><div><dt>Last updated</dt><dd>{{ item.updated_at[:10] }}</dd></div></dl></section>
+    <section class="detail-panel"><h2>Stock by location</h2><div class="detail-stock">{% for stock in stocks %}<div><span><strong>{{ stock.name }}</strong><br><small>{{ stock.kind|title }}</small></span><span>{{ stock.unopened|int if stock.unopened == stock.unopened|int else stock.unopened }} unopened{% if stock.opened %}<br>{{ stock.opened|int if stock.opened == stock.opened|int else stock.opened }} open{% endif %}</span></div>{% else %}<p>No stock locations have quantity.</p>{% endfor %}</div></section>
+    {% if item.notes %}<section class="detail-panel wide"><h2>Notes</h2><p class="detail-copy">{{ item.notes }}</p></section>{% endif %}
+    {% if item.ingredients %}<section class="detail-panel wide"><h2>Ingredients</h2><p class="detail-copy">{{ item.ingredients }}</p></section>{% endif %}
+  </div>
+</section>
+{% endblock %}

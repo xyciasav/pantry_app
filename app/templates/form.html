@@ -25,6 +25,7 @@
     <label class="field"><span>Expires on</span><input type="date" name="expires_on" value="{{ item.expires_on if item and item.expires_on else '' }}"></label>
     <label class="field wide"><span>Tell me when unopened reaches</span><input type="number" min="0" step="0.25" name="low_at" value="{{ item.low_at if item else 1 }}"><small>This creates a running-low alert based on sealed stock.</small></label>
     <label class="field wide"><span>Notes <em>optional</em></span><textarea name="notes" rows="3" placeholder="Brand, size, meal plans…">{{ item.notes if item else '' }}</textarea></label>
+    <label class="field wide"><span>Ingredients <em>optional</em></span><textarea name="ingredients" rows="4" placeholder="Filled automatically when a barcode lookup provides ingredients…">{{ item.ingredients if item and item.ingredients else '' }}</textarea></label>
     <div class="form-actions wide"><button class="save-button" type="submit">{{ 'Add to kitchen' if is_new else 'Save changes' }}</button>{% if not is_new %}<a href="/items/{{ item.id }}/group">Group similar items</a>{% endif %}<a href="{{ return_to if not is_new else '/' }}">Cancel</a></div>
   </form>
   {% if not is_new %}<form class="delete-form" method="post" action="/items/{{ item.id }}/delete" onsubmit="return confirm('Remove {{ item.name }}?')"><input type="hidden" name="return_to" value="{{ return_to }}"><button>Remove this item</button></form>{% endif %}

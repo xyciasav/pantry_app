@@ -80,6 +80,7 @@ async function useBarcode(code) {
       params.set('category', product.category || 'other');
       params.set('unit', product.unit || 'item');
       params.set('image_url', product.image_url || '');
+      params.set('ingredients', product.ingredients || '');
     }
     window.location.href = '/items/new?' + params.toString();
   } catch (error) {
