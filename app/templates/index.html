@@ -23,8 +23,12 @@
 </form>
 
 {% if items %}
-<section class="grid">
-  {% for item in items %}
+<div class="category-sections">
+  {% for section in category_sections %}
+  <section class="category-section" id="category-{{ section.key }}">
+    <div class="category-heading"><div><span>{{ section.icon }}</span><div><h2>{{ section.label }}</h2><p>{{ section["items"]|length }} item{% if section["items"]|length != 1 %}s{% endif %}</p></div></div><a href="/?category={{ section.key }}">View only</a></div>
+    <div class="grid">
+  {% for item in section["items"] %}
   <article class="item-card {{ item.state }}">
     <a class="edit-link" href="{% if item.card_type == 'group' %}/groups/{{ item.id }}{% else %}/items/{{ item.id }}/edit{% endif %}" aria-label="{% if item.card_type == 'group' %}View{% else %}Edit{% endif %} {{ item.name }}">•••</a>
     <div class="item-visual category-{{ item.category }}">{% if item.image_url %}<img src="{{ item.image_url }}" alt="{{ item.name }}">{% else %}<span>{{ item.icon }}</span>{% endif %}<em>{% if item.card_type == 'group' %}{{ item.variants|length }} brands · {{ item.active_locations }} location{% if item.active_locations != 1 %}s{% endif %}{% elif item.active_locations > 1 %}{{ item.active_locations }} locations{% else %}{{ item.location_name or 'No stock' }}{% endif %}</em></div>
@@ -55,7 +59,10 @@
     </div>
   </article>
   {% endfor %}
-</section>
+    </div>
+  </section>
+  {% endfor %}
+</div>
 {% else %}
 <section class="empty"><div>🫙</div><h2>Your shelves are looking empty</h2><p>Add your first item to start tracking what you have.</p><a class="add-button" href="/items/new">＋ Add first item</a></section>
 {% endif %}

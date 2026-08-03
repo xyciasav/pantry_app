@@ -14,6 +14,20 @@
     <button class="save-button">Look up</button>
   </form>
   <p class="scan-help">Camera scanning requires HTTPS when opened from another device. Manual entry always works.</p>
+  <dialog id="quickAdjust" class="quick-dialog">
+    <form id="quickForm" method="post">
+      <button class="dialog-close" type="button" aria-label="Close">×</button>
+      <div class="quick-product"><img id="quickImage" alt=""><div><p class="eyebrow">FOUND IN YOUR KITCHEN</p><h2 id="quickName"></h2><p id="quickOpen"></p></div></div>
+      <div class="quick-quantity">
+        <button id="quickMinus" type="button" aria-label="Remove one">−</button>
+        <div><strong id="quickCount">0</strong><span>unopened after saving</span></div>
+        <button id="quickPlus" type="button" aria-label="Add one">＋</button>
+      </div>
+      <input id="quickDelta" type="hidden" name="delta" value="0">
+      <input type="hidden" name="return_to" value="/scan?saved=1">
+      <div class="quick-actions"><a id="quickEdit" class="secondary-button" href="#">Full details</a><button class="save-button" type="submit">Save quantity</button></div>
+    </form>
+  </dialog>
 </section>
 {% endblock %}
 {% block scripts %}
@@ -22,6 +36,32 @@
 const video = document.getElementById('camera');
 const statusBox = document.getElementById('scanStatus');
 let busy = false;
+const quickDialog = document.getElementById('quickAdjust');
+const quickCount = document.getElementById('quickCount');
+const quickDelta = document.getElementById('quickDelta');
+let quickStartingCount = 0;
+
+function showInventoryMatch(product) {
+  quickStartingCount = Number(product.unopened || 0);
+  quickDelta.value = '0';
+  quickCount.textContent = quickStartingCount;
+  document.getElementById('quickName').textContent = product.name;
+  document.getElementById('quickOpen').textContent = Number(product.opened || 0) + ' open · ' + (product.unit || 'item');
+  document.getElementById('quickImage').src = product.image_url || '/static/items/canned-food.webp';
+  document.getElementById('quickForm').action = '/items/' + product.item_id + '/quantity';
+  document.getElementById('quickEdit').href = '/items/' + product.item_id + '/edit';
+  quickDialog.showModal();
+}
+
+function changePendingQuantity(amount) {
+  const nextDelta = Math.max(-quickStartingCount, Number(quickDelta.value) + amount);
+  quickDelta.value = nextDelta;
+  quickCount.textContent = quickStartingCount + nextDelta;
+}
+
+document.getElementById('quickMinus').addEventListener('click', () => changePendingQuantity(-1));
+document.getElementById('quickPlus').addEventListener('click', () => changePendingQuantity(1));
+document.querySelector('.dialog-close').addEventListener('click', () => { quickDialog.close(); busy = false; });
 
 async function useBarcode(code) {
   if (busy) return;
@@ -30,6 +70,10 @@ async function useBarcode(code) {
   try {
     const response = await fetch('/api/barcode/' + encodeURIComponent(code));
     const product = await response.json();
+    if (product.inventory_match) {
+      showInventoryMatch(product);
+      return;
+    }
     const params = new URLSearchParams({barcode: product.barcode || code});
     if (product.found) {
       params.set('name', product.name || '');

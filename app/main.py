@@ -30,7 +30,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.6.4")
+APP_VERSION = os.getenv("APP_VERSION", "1.6.5")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -442,13 +442,23 @@ def home(request: Request, location: str = "all", category: str = "all", q: str 
             "variants": variants,
         })
     items = sorted(visible_items, key=lambda item: (item["expires_on"] is None, item["expires_on"] or "", item["name"].lower()))
+    category_sections = []
+    for category_key, (category_label, category_icon) in CATEGORIES.items():
+        category_items = [item for item in items if item["category"] == category_key]
+        if category_items:
+            category_sections.append({
+                "key": category_key,
+                "label": category_label,
+                "icon": category_icon,
+                "items": category_items,
+            })
     counts = {
         "all": len(items),
         "attention": sum(i["state"] in {"out", "low", "expired", "expiring"} for i in items),
         "expiring": sum(i["state"] in {"expired", "expiring"} for i in items),
         "low": sum(i["state"] in {"out", "low"} for i in items),
     }
-    return render(request, "index.html", items=items, counts=counts, filters={"location": location, "category": category, "q": q})
+    return render(request, "index.html", items=items, category_sections=category_sections, counts=counts, filters={"location": location, "category": category, "q": q})
 
 
 @app.get("/items/new", response_class=HTMLResponse)
@@ -529,7 +539,7 @@ async def save_item(
 
 
 @app.post("/items/{item_id}/quantity")
-def change_quantity(item_id: int, delta: float = Form(...)):
+def change_quantity(item_id: int, delta: float = Form(...), return_to: str = Form("/")):
     with closing(db()) as conn:
         now = datetime.now().isoformat(timespec="seconds")
         stock = conn.execute(
@@ -557,7 +567,8 @@ def change_quantity(item_id: int, delta: float = Form(...)):
         conn.commit()
     if not cursor.rowcount:
         raise HTTPException(404)
-    return RedirectResponse("/", status_code=303)
+    destination = return_to if return_to.startswith("/") and not return_to.startswith("//") else "/"
+    return RedirectResponse(destination, status_code=303)
 
 
 @app.get("/items/{item_id}/stock", response_class=HTMLResponse)
@@ -920,6 +931,34 @@ def barcode_lookup(code: str):
     digits = "".join(character for character in code if character.isdigit())
     if not 6 <= len(digits) <= 14:
         raise HTTPException(400, "Enter a valid barcode")
+    with closing(db()) as conn:
+        pantry_row = conn.execute(
+            """SELECT items.*,
+                      COALESCE(SUM(item_stocks.quantity), 0) AS total_quantity,
+                      COALESCE(SUM(item_stocks.opened), 0) AS opened_quantity,
+                      COUNT(CASE WHEN item_stocks.quantity > 0 THEN 1 END) AS active_locations,
+                      MIN(CASE WHEN item_stocks.quantity > 0 THEN locations.name END) AS location_name
+               FROM items
+               LEFT JOIN item_stocks ON item_stocks.item_id = items.id
+               LEFT JOIN locations ON locations.id = item_stocks.location_id
+               WHERE items.barcode = ?
+               GROUP BY items.id
+               ORDER BY items.updated_at DESC LIMIT 1""",
+            (digits,),
+        ).fetchone()
+    if pantry_row:
+        pantry_item = view_item(pantry_row)
+        return {
+            "found": True,
+            "inventory_match": True,
+            "barcode": digits,
+            "item_id": pantry_item["id"],
+            "name": pantry_item["name"],
+            "image_url": pantry_item["image_url"] or "",
+            "unopened": pantry_item["unopened_quantity"],
+            "opened": pantry_item["opened_quantity"],
+            "unit": pantry_item["unit"],
+        }
     fields = "code,product_name,brands,quantity,image_front_url,categories_tags"
     url = f"https://world.openfoodfacts.org/api/v3/product/{digits}?fields={urllib.parse.quote(fields)}"
     request = urllib.request.Request(
