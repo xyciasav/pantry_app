@@ -39,3 +39,9 @@
 .shopping-list article>.shopping-item-photo img{display:block;width:100%;height:100%;max-width:56px;max-height:56px;object-fit:contain}
 .shopping-list article>div:nth-child(3){flex:1;min-width:0}
 @media(max-width:700px){.shopping-list article>div.shopping-item-photo:nth-child(2){width:48px;height:48px;min-width:48px}.shopping-list article>.shopping-item-photo img{max-width:48px;max-height:48px}}
+
+.batch-list{display:grid;gap:10px}.batch-card{display:grid;grid-template-columns:1.35fr .65fr .65fr 1fr 1fr auto;align-items:end;gap:10px;background:var(--paper);border:1px solid var(--line);border-radius:17px;padding:16px}.batch-card .field{min-width:0}.batch-card .save-button{min-height:45px;white-space:nowrap}.batch-new{margin-top:24px;border-color:#b9c99f;background:#f0f4e7}.batch-new-title{display:grid;align-self:center}.batch-new-title strong{font:700 20px "Fraunces"}.batch-new-title span{color:var(--muted);font-size:10px}.batch-detail small{color:var(--muted)}
+.install-button{border:1px solid #b8c99e;border-radius:12px;background:#e8eed0;color:var(--green);padding:12px 14px;font-weight:700;cursor:pointer}.install-button[hidden]{display:none}
+@media(max-width:800px){.batch-card{grid-template-columns:1fr 1fr}.batch-new-title{grid-column:1/-1}.batch-card .save-button{grid-column:1/-1;width:100%}}
+.batch-list .batch-card{grid-template-columns:1.35fr .65fr .65fr 1fr 1fr}
+@media(max-width:800px){.batch-list .batch-card{grid-template-columns:1fr 1fr}}

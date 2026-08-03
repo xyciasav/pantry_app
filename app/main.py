@@ -30,7 +30,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.7.2")
+APP_VERSION = os.getenv("APP_VERSION", "1.8.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -148,7 +148,7 @@ def require_api_key(credentials: HTTPAuthorizationCredentials | None = Security(
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     path = request.url.path
-    public = path in {"/login", "/health", "/docs", "/openapi.json"} or path.startswith("/static/")
+    public = path in {"/login", "/health", "/docs", "/openapi.json", "/manifest.webmanifest", "/sw.js"} or path.startswith("/static/")
     session_token = request.cookies.get(COOKIE_NAME) or request.cookies.get(LEGACY_COOKIE_NAME)
     api_access = path == "/api/inventory" and valid_api_key(request)
     if not public and not api_access and not valid_session_token(session_token):
@@ -281,6 +281,26 @@ def init_db() -> None:
                SELECT id, location_id, quantity, 0, ? FROM items WHERE location_id IS NOT NULL""",
             (now,),
         )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS stock_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                location_id INTEGER NOT NULL REFERENCES locations(id),
+                quantity REAL NOT NULL DEFAULT 0 CHECK(quantity >= 0),
+                opened REAL NOT NULL DEFAULT 0 CHECK(opened >= 0 AND opened <= quantity),
+                bought_on TEXT,
+                expires_on TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO stock_batches (item_id, location_id, quantity, opened, bought_on, expires_on, created_at, updated_at)
+               SELECT s.item_id, s.location_id, s.quantity, s.opened, i.bought_on, i.expires_on, ?, ?
+               FROM item_stocks s JOIN items i ON i.id=s.item_id
+               WHERE s.quantity > 0 AND NOT EXISTS (SELECT 1 FROM stock_batches b WHERE b.item_id=s.item_id)""",
+            (now, now),
+        )
         conn.commit()
         CATEGORIES.clear()
         CATEGORIES.update({row["key"]: (row["label"], row["icon"]) for row in conn.execute("SELECT * FROM categories ORDER BY label")})
@@ -309,6 +329,49 @@ def normalize_date(value: str | None) -> str | None:
         return date.fromisoformat(value).isoformat()
     except ValueError as exc:
         raise HTTPException(400, "Invalid date") from exc
+
+
+def refresh_stock_from_batches(conn: sqlite3.Connection, item_id: int) -> float:
+    """Keep the legacy per-location totals and item summary in sync with dated lots."""
+    now = datetime.now().isoformat(timespec="seconds")
+    conn.execute("DELETE FROM item_stocks WHERE item_id=?", (item_id,))
+    conn.execute(
+        """INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at)
+           SELECT item_id, location_id, SUM(quantity), SUM(opened), ?
+           FROM stock_batches WHERE item_id=? AND quantity > 0 GROUP BY item_id, location_id""",
+        (now, item_id),
+    )
+    summary = conn.execute(
+        """SELECT COALESCE(SUM(quantity),0) AS total,
+                  MIN(CASE WHEN quantity > 0 THEN expires_on END) AS next_expiry,
+                  MAX(CASE WHEN quantity > 0 THEN bought_on END) AS latest_purchase
+           FROM stock_batches WHERE item_id=?""",
+        (item_id,),
+    ).fetchone()
+    conn.execute(
+        "UPDATE items SET quantity=?, expires_on=?, bought_on=COALESCE(?, bought_on), updated_at=? WHERE id=?",
+        (summary["total"], summary["next_expiry"], summary["latest_purchase"], now, item_id),
+    )
+    return float(summary["total"])
+
+
+def consume_batches(conn: sqlite3.Connection, item_id: int, amount: float) -> None:
+    """Consume opened lots first, then earliest-expiring unopened lots."""
+    remaining = amount
+    rows = conn.execute(
+        """SELECT * FROM stock_batches WHERE item_id=? AND quantity > 0
+           ORDER BY CASE WHEN opened > 0 THEN 0 ELSE 1 END,
+                    CASE WHEN expires_on IS NULL THEN 1 ELSE 0 END, expires_on, created_at""",
+        (item_id,),
+    ).fetchall()
+    for batch in rows:
+        if remaining <= 0:
+            break
+        used = min(remaining, batch["quantity"])
+        new_quantity = batch["quantity"] - used
+        new_opened = min(batch["opened"], new_quantity)
+        conn.execute("UPDATE stock_batches SET quantity=?, opened=?, updated_at=? WHERE id=?", (new_quantity, new_opened, datetime.now().isoformat(timespec="seconds"), batch["id"]))
+        remaining -= used
 
 
 def safe_return_path(value: str | None, fallback: str = "/") -> str:
@@ -462,6 +525,16 @@ def health() -> dict:
     return {"status": "ok", "version": APP_VERSION}
 
 
+@app.get("/manifest.webmanifest")
+def pwa_manifest():
+    return Response((BASE_DIR / "static" / "manifest.webmanifest").read_text(encoding="utf-8"), media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def service_worker():
+    return Response((BASE_DIR / "static" / "sw.js").read_text(encoding="utf-8"), media_type="application/javascript", headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"})
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, location: str = "all", category: str = "all", q: str = ""):
     clauses, params = [], []
@@ -572,10 +645,15 @@ def item_detail(request: Request, item_id: int, return_to: str = "/"):
                WHERE item_stocks.item_id=? AND item_stocks.quantity > 0 ORDER BY locations.name""",
             (item_id,),
         )]
+        batches = [dict(batch) for batch in conn.execute(
+            """SELECT stock_batches.*, locations.name AS location_name
+               FROM stock_batches JOIN locations ON locations.id=stock_batches.location_id
+               WHERE stock_batches.item_id=? AND stock_batches.quantity > 0
+               ORDER BY CASE WHEN expires_on IS NULL THEN 1 ELSE 0 END, expires_on, created_at""", (item_id,))]
     item = view_item(row)
     for stock in stocks:
         stock["unopened"] = max(0, stock["quantity"] - stock["opened"])
-    return render(request, "detail.html", item=item, stocks=stocks, return_to=safe_return_path(return_to))
+    return render(request, "detail.html", item=item, stocks=stocks, batches=batches, return_to=safe_return_path(return_to))
 
 
 @app.get("/items/{item_id}/edit", response_class=HTMLResponse)
@@ -647,7 +725,8 @@ async def save_item(
                 (name.strip(), category if category in CATEGORIES else "other", location_row["kind"], location_id, total_quantity, unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), ingredients.strip(), barcode.strip(), saved_image_url, now, now),
             )
             new_item_id = cursor.lastrowid
-            conn.execute("INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at) VALUES (?, ?, ?, ?, ?)", (new_item_id, location_id, total_quantity, opened, now))
+            conn.execute("INSERT INTO stock_batches (item_id, location_id, quantity, opened, bought_on, expires_on, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (new_item_id, location_id, total_quantity, opened, normalize_date(bought_on), normalize_date(expires_on), now, now))
+            refresh_stock_from_batches(conn, new_item_id)
             record_inventory_event(conn, new_item_id, total_quantity, "purchase")
         conn.commit()
     return RedirectResponse(safe_return_path(return_to), status_code=303)
@@ -658,33 +737,18 @@ def change_quantity(item_id: int, delta: float = Form(...), return_to: str = For
     with closing(db()) as conn:
         now = datetime.now().isoformat(timespec="seconds")
         previous_total = conn.execute("SELECT COALESCE(SUM(quantity), 0) FROM item_stocks WHERE item_id = ?", (item_id,)).fetchone()[0]
-        stock = conn.execute(
-            """SELECT * FROM item_stocks WHERE item_id = ?
-               ORDER BY CASE WHEN quantity - opened > 0 THEN 0 ELSE 1 END, CASE WHEN opened > 0 THEN 0 ELSE 1 END, id LIMIT 1""",
-            (item_id,),
-        ).fetchone()
-        if not stock:
-            item = conn.execute("SELECT location_id FROM items WHERE id = ?", (item_id,)).fetchone()
-            if not item or not item["location_id"]:
-                raise HTTPException(404)
-            conn.execute("INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at) VALUES (?, ?, 0, 0, ?)", (item_id, item["location_id"], now))
-            stock = conn.execute("SELECT * FROM item_stocks WHERE item_id = ? LIMIT 1", (item_id,)).fetchone()
-        unopened = stock["quantity"] - stock["opened"]
-        if delta < 0 and unopened <= 0 and stock["opened"] > 0:
-            new_quantity = max(0, stock["quantity"] + delta)
-            new_opened = max(0, stock["opened"] + delta)
-        else:
-            new_quantity = max(stock["opened"], stock["quantity"] + delta)
-            new_opened = stock["opened"]
-        new_opened = min(new_opened, new_quantity)
-        cursor = conn.execute("UPDATE item_stocks SET quantity=?, opened=?, updated_at=? WHERE id=?", (new_quantity, new_opened, now, stock["id"]))
-        total = conn.execute("SELECT COALESCE(SUM(quantity), 0) FROM item_stocks WHERE item_id = ?", (item_id,)).fetchone()[0]
-        conn.execute("UPDATE items SET quantity=?, updated_at=? WHERE id=?", (total, now, item_id))
+        item = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+        if not item:
+            raise HTTPException(404)
+        if delta < 0:
+            consume_batches(conn, item_id, min(-delta, previous_total))
+        elif delta > 0:
+            location_id = item["location_id"] or conn.execute("SELECT id FROM locations ORDER BY id LIMIT 1").fetchone()[0]
+            conn.execute("INSERT INTO stock_batches (item_id, location_id, quantity, opened, bought_on, expires_on, created_at, updated_at) VALUES (?, ?, ?, 0, ?, NULL, ?, ?)", (item_id, location_id, delta, date.today().isoformat(), now, now))
+        total = refresh_stock_from_batches(conn, item_id)
         record_inventory_event(conn, item_id, total - previous_total, "restock" if total > previous_total else "use")
         maybe_auto_add_shopping(conn, item_id)
         conn.commit()
-    if not cursor.rowcount:
-        raise HTTPException(404)
     destination = return_to if return_to.startswith("/") and not return_to.startswith("//") else "/"
     return RedirectResponse(destination, status_code=303)
 
@@ -706,7 +770,13 @@ def item_stock_page(request: Request, item_id: int, return_to: str = "/"):
                 (item_id,),
             )
         ]
-    return render(request, "stock.html", item=dict(item), stocks=stocks, return_to=safe_return_path(return_to))
+        batches = [dict(row) for row in conn.execute(
+            """SELECT stock_batches.*, locations.name AS location_name, locations.kind
+               FROM stock_batches JOIN locations ON locations.id=stock_batches.location_id
+               WHERE stock_batches.item_id=? AND stock_batches.quantity > 0
+               ORDER BY CASE WHEN expires_on IS NULL THEN 1 ELSE 0 END, expires_on, created_at""", (item_id,))]
+        locations = get_locations(conn)
+    return render(request, "stock.html", item=dict(item), stocks=stocks, batches=batches, locations=locations, today=date.today().isoformat(), return_to=safe_return_path(return_to))
 
 
 @app.get("/items/{item_id}/group", response_class=HTMLResponse)
@@ -879,6 +949,64 @@ async def update_item_stock(item_id: int, request: Request):
     return RedirectResponse(return_to, status_code=303)
 
 
+@app.post("/items/{item_id}/batches")
+def add_stock_batch(item_id: int, location_id: int = Form(...), quantity: float = Form(...), opened: float = Form(0), bought_on: str | None = Form(None), expires_on: str | None = Form(None), return_to: str = Form("/")):
+    if quantity <= 0 or opened < 0 or opened > quantity:
+        raise HTTPException(400, "Enter a positive quantity and a valid opened amount")
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(db()) as conn:
+        if not conn.execute("SELECT 1 FROM items WHERE id=?", (item_id,)).fetchone() or not conn.execute("SELECT 1 FROM locations WHERE id=?", (location_id,)).fetchone():
+            raise HTTPException(404)
+        before = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM item_stocks WHERE item_id=?", (item_id,)).fetchone()[0]
+        conn.execute("INSERT INTO stock_batches (item_id, location_id, quantity, opened, bought_on, expires_on, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (item_id, location_id, quantity, opened, normalize_date(bought_on), normalize_date(expires_on), now, now))
+        total = refresh_stock_from_batches(conn, item_id)
+        record_inventory_event(conn, item_id, total - before, "purchase")
+        conn.commit()
+    return RedirectResponse(f"/items/{item_id}/stock?return_to={urllib.parse.quote(safe_return_path(return_to), safe='/')}", status_code=303)
+
+
+@app.post("/items/{item_id}/batches/save")
+async def save_stock_batches(item_id: int, request: Request):
+    form = await request.form()
+    return_to = safe_return_path(str(form.get("return_to", "/")))
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(db()) as conn:
+        before = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM item_stocks WHERE item_id=?", (item_id,)).fetchone()[0]
+        batch_ids = [row[0] for row in conn.execute("SELECT id FROM stock_batches WHERE item_id=?", (item_id,))]
+        for batch_id in batch_ids:
+            try:
+                location_id = int(form.get(f"location_{batch_id}"))
+                quantity = float(form.get(f"quantity_{batch_id}"))
+                opened = float(form.get(f"opened_{batch_id}"))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, "Enter valid batch values") from exc
+            if quantity < 0 or opened < 0 or opened > quantity:
+                raise HTTPException(400, "Opened stock cannot exceed the batch total")
+            conn.execute("UPDATE stock_batches SET location_id=?, quantity=?, opened=?, bought_on=?, expires_on=?, updated_at=? WHERE id=? AND item_id=?", (location_id, quantity, opened, normalize_date(str(form.get(f"bought_{batch_id}", ""))), normalize_date(str(form.get(f"expires_{batch_id}", ""))), now, batch_id, item_id))
+        total = refresh_stock_from_batches(conn, item_id)
+        record_inventory_event(conn, item_id, total - before, "restock" if total > before else "use")
+        maybe_auto_add_shopping(conn, item_id)
+        conn.commit()
+    return RedirectResponse(f"/items/{item_id}/stock?return_to={urllib.parse.quote(return_to, safe='/')}", status_code=303)
+
+
+@app.post("/items/{item_id}/batches/{batch_id}")
+def update_stock_batch(item_id: int, batch_id: int, quantity: float = Form(...), opened: float = Form(0), location_id: int = Form(...), bought_on: str | None = Form(None), expires_on: str | None = Form(None), return_to: str = Form("/")):
+    if quantity < 0 or opened < 0 or opened > quantity:
+        raise HTTPException(400, "Enter valid batch quantities")
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(db()) as conn:
+        before = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM item_stocks WHERE item_id=?", (item_id,)).fetchone()[0]
+        cursor = conn.execute("UPDATE stock_batches SET location_id=?, quantity=?, opened=?, bought_on=?, expires_on=?, updated_at=? WHERE id=? AND item_id=?", (location_id, quantity, opened, normalize_date(bought_on), normalize_date(expires_on), now, batch_id, item_id))
+        if not cursor.rowcount:
+            raise HTTPException(404)
+        total = refresh_stock_from_batches(conn, item_id)
+        record_inventory_event(conn, item_id, total - before, "restock" if total > before else "use")
+        maybe_auto_add_shopping(conn, item_id)
+        conn.commit()
+    return RedirectResponse(f"/items/{item_id}/stock?return_to={urllib.parse.quote(safe_return_path(return_to), safe='/')}", status_code=303)
+
+
 @app.post("/items/{item_id}/delete")
 def delete_item(item_id: int, return_to: str = Form("/")):
     with closing(db()) as conn:
@@ -1005,7 +1133,7 @@ def remove_from_shopping(item_id: int):
 
 
 @app.post("/shopping/{item_id}/buy")
-def buy_shopping_item(item_id: int, quantity: float = Form(...), location_id: int = Form(...)):
+def buy_shopping_item(item_id: int, quantity: float = Form(...), location_id: int = Form(...), bought_on: str | None = Form(None), expires_on: str | None = Form(None)):
     if quantity <= 0:
         raise HTTPException(400, "Purchased quantity must be greater than zero")
     with closing(db()) as conn:
@@ -1014,16 +1142,9 @@ def buy_shopping_item(item_id: int, quantity: float = Form(...), location_id: in
         if not item or not location:
             raise HTTPException(404, "Item or location not found")
         now = datetime.now().isoformat(timespec="seconds")
-        conn.execute(
-            """INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at)
-               VALUES (?, ?, ?, 0, ?)
-               ON CONFLICT(item_id, location_id) DO UPDATE SET
-                 quantity=item_stocks.quantity + excluded.quantity,
-                 updated_at=excluded.updated_at""",
-            (item_id, location_id, quantity, now),
-        )
-        total = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM item_stocks WHERE item_id=?", (item_id,)).fetchone()[0]
-        conn.execute("UPDATE items SET quantity=?, location_id=COALESCE(location_id, ?), updated_at=? WHERE id=?", (total, location_id, now, item_id))
+        conn.execute("INSERT INTO stock_batches (item_id, location_id, quantity, opened, bought_on, expires_on, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?)", (item_id, location_id, quantity, normalize_date(bought_on) or date.today().isoformat(), normalize_date(expires_on), now, now))
+        refresh_stock_from_batches(conn, item_id)
+        conn.execute("UPDATE items SET location_id=COALESCE(location_id, ?) WHERE id=?", (location_id, item_id))
         record_inventory_event(conn, item_id, quantity, "purchase")
         conn.execute("DELETE FROM shopping_list WHERE item_id=?", (item_id,))
         conn.commit()
@@ -1249,11 +1370,23 @@ def inventory_api():
                FROM item_stocks JOIN locations ON locations.id=item_stocks.location_id
                WHERE item_stocks.quantity > 0 ORDER BY locations.name"""
         ).fetchall()
+        batch_rows = conn.execute(
+            """SELECT stock_batches.item_id, stock_batches.id, locations.name AS location,
+                      stock_batches.quantity, stock_batches.opened, stock_batches.bought_on, stock_batches.expires_on
+               FROM stock_batches JOIN locations ON locations.id=stock_batches.location_id
+               WHERE stock_batches.quantity > 0
+               ORDER BY stock_batches.item_id, CASE WHEN stock_batches.expires_on IS NULL THEN 1 ELSE 0 END, stock_batches.expires_on"""
+        ).fetchall()
     stocks: dict[int, list[dict]] = {}
     for row in stock_rows:
         stock = dict(row)
         stock["unopened"] = stock["quantity"] - stock["opened"]
         stocks.setdefault(stock.pop("item_id"), []).append(stock)
+    batches: dict[int, list[dict]] = {}
+    for row in batch_rows:
+        batch = dict(row)
+        batch["unopened"] = batch["quantity"] - batch["opened"]
+        batches.setdefault(batch.pop("item_id"), []).append(batch)
     inventory = []
     for row in rows:
         item = view_item(row)
@@ -1262,6 +1395,6 @@ def inventory_api():
             "category": item["category_label"], "unopened": item["unopened_quantity"],
             "open": item["opened_quantity"], "total": item["quantity"], "unit": item["unit"],
             "bought_on": item["bought_on"], "expires_on": item["expires_on"], "state": item["state"],
-            "barcode": item.get("barcode"), "notes": item["notes"], "ingredients": item.get("ingredients", ""), "locations": stocks.get(item["id"], []),
+            "barcode": item.get("barcode"), "notes": item["notes"], "ingredients": item.get("ingredients", ""), "locations": stocks.get(item["id"], []), "batches": batches.get(item["id"], []),
         })
     return {"version": APP_VERSION, "generated_at": datetime.now().isoformat(timespec="seconds"), "items": inventory}

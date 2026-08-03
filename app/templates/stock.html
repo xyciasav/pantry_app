@@ -2,20 +2,31 @@
 {% block title %}{{ item.name }} stock · Shelf Life{% endblock %}
 {% block content %}
 <section class="form-shell stock-shell">
-  <a class="back" href="{{ return_to }}">← Back to kitchen</a>
-  <div class="form-heading"><p class="eyebrow">STOCK BY LOCATION</p><h1>{{ item.name }}</h1><p>Count unopened and open packages separately. We’ll add them for the overall total.</p></div>
-  <form method="post" action="/items/{{ item.id }}/stock"><input type="hidden" name="return_to" value="{{ return_to }}">
-  <div class="stock-list">
-    {% for stock in stocks %}
-    <div class="stock-location-form">
-      <div class="stock-location-name"><strong>{{ stock.name }}</strong><span>{{ stock.kind|title }}</span></div>
-      <label class="field stock-number"><span>Unopened</span><input type="number" min="0" step="0.25" name="unopened_{{ stock.id }}" value="{{ stock.quantity - stock.opened }}" required><small>Sealed</small></label>
-      <label class="field stock-number"><span>Open</span><input type="number" min="0" step="0.25" name="opened_{{ stock.id }}" value="{{ stock.opened }}" required><small>In use</small></label>
+  <a class="back" href="{{ return_to }}">← Back</a>
+  <div class="form-heading"><p class="eyebrow">DATED STOCK BATCHES</p><h1>{{ item.name }}</h1><p>Keep each purchase separate so older and newer packages can have different dates.</p></div>
+
+  <form method="post" action="/items/{{ item.id }}/batches/save"><input type="hidden" name="return_to" value="{{ return_to }}"><div class="batch-list">
+    {% for batch in batches %}
+    <div class="batch-card">
+      <label class="field"><span>Location</span><select name="location_{{ batch.id }}">{% for location in locations %}<option value="{{ location.id }}"{% if location.id == batch.location_id %} selected{% endif %}>{{ location.name }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Total</span><input type="number" min="0" step="0.25" name="quantity_{{ batch.id }}" value="{{ batch.quantity }}" required></label>
+      <label class="field"><span>Open</span><input type="number" min="0" step="0.25" name="opened_{{ batch.id }}" value="{{ batch.opened }}" required></label>
+      <label class="field"><span>Bought</span><input type="date" name="bought_{{ batch.id }}" value="{{ batch.bought_on or '' }}"></label>
+      <label class="field"><span>Expires</span><input type="date" name="expires_{{ batch.id }}" value="{{ batch.expires_on or '' }}"></label>
     </div>
-    {% endfor %}
-  </div>
-  <div class="stock-save-all"><button class="save-button" type="submit">Save all locations</button></div>
+    {% else %}<div class="shopping-empty"><strong>No stock batches yet.</strong><span>Add the first purchase below.</span></div>{% endfor %}
+  </div><div class="stock-save-all"><button class="save-button" type="submit">Save all batches</button></div></form>
+
+  <form class="batch-card batch-new" method="post" action="/items/{{ item.id }}/batches">
+    <input type="hidden" name="return_to" value="{{ return_to }}">
+    <div class="batch-new-title"><strong>Add another purchase</strong><span>A new package, case, or dated lot</span></div>
+    <label class="field"><span>Location</span><select name="location_id">{% for location in locations %}<option value="{{ location.id }}">{{ location.name }}</option>{% endfor %}</select></label>
+    <label class="field"><span>Total</span><input type="number" min="0.25" step="0.25" name="quantity" value="1" required></label>
+    <label class="field"><span>Open</span><input type="number" min="0" step="0.25" name="opened" value="0" required></label>
+    <label class="field"><span>Bought</span><input type="date" name="bought_on" value="{{ today }}"></label>
+    <label class="field"><span>Expires</span><input type="date" name="expires_on"></label>
+    <button class="save-button" type="submit">Add batch</button>
   </form>
-  <p class="stock-note">Example: 0 unopened + 1 open means you have one package left, and it is already open.</p>
+  <p class="stock-note">Set a batch total to 0 and save to remove it. Quick minus buttons use opened stock first, then the earliest expiration.</p>
 </section>
 {% endblock %}

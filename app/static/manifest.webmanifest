@@ -1,0 +1,13 @@
+{
+  "name": "Shelf Life Pantry",
+  "short_name": "Shelf Life",
+  "description": "Track pantry, fridge, freezer, expiration dates, and shopping needs.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f3e7",
+  "theme_color": "#15352d",
+  "icons": [
+    {"src": "/static/app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}

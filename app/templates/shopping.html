@@ -24,6 +24,8 @@
       <div class="bought-icon">✓</div><p class="eyebrow">CONFIRM PURCHASE</p><h2>Did you buy <span id="boughtName"></span>?</h2><p>Confirming adds unopened stock and removes it from this list.</p>
       <label class="field"><span>Quantity bought</span><input id="boughtQuantity" type="number" name="quantity" min="0.25" step="0.25" value="1" required><small id="boughtUnit"></small></label>
       <label class="field"><span>Put it in</span><select id="boughtLocation" name="location_id" required>{% for location in locations %}<option value="{{ location.id }}">{{ location.name }} · {{ location.kind|title }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Bought on</span><input id="boughtOn" type="date" name="bought_on" required></label>
+      <label class="field"><span>Expires on</span><input type="date" name="expires_on"><small>Optional</small></label>
       <div class="bought-actions"><button id="cancelBought" class="secondary-button" type="button">No, go back</button><button class="save-button" type="submit">Yes, add to inventory</button></div>
     </form>
   </dialog>
@@ -39,6 +41,7 @@ document.querySelectorAll('.shopping-check').forEach(check => check.addEventList
   document.getElementById('boughtName').textContent = check.dataset.itemName;
   document.getElementById('boughtUnit').textContent = check.dataset.unit || 'item';
   document.getElementById('boughtQuantity').value = '1';
+  document.getElementById('boughtOn').value = new Date().toISOString().slice(0, 10);
   if (check.dataset.locationId) document.getElementById('boughtLocation').value = check.dataset.locationId;
   boughtForm.action = '/shopping/' + check.dataset.itemId + '/buy';
   boughtDialog.showModal();
