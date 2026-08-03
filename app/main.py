@@ -30,7 +30,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.7.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.7.1")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -1002,6 +1002,32 @@ def remove_from_shopping(item_id: int):
         conn.execute("DELETE FROM shopping_list WHERE item_id=?", (item_id,))
         conn.commit()
     return RedirectResponse("/shopping", status_code=303)
+
+
+@app.post("/shopping/{item_id}/buy")
+def buy_shopping_item(item_id: int, quantity: float = Form(...), location_id: int = Form(...)):
+    if quantity <= 0:
+        raise HTTPException(400, "Purchased quantity must be greater than zero")
+    with closing(db()) as conn:
+        item = conn.execute("SELECT id FROM items WHERE id=?", (item_id,)).fetchone()
+        location = conn.execute("SELECT id FROM locations WHERE id=?", (location_id,)).fetchone()
+        if not item or not location:
+            raise HTTPException(404, "Item or location not found")
+        now = datetime.now().isoformat(timespec="seconds")
+        conn.execute(
+            """INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at)
+               VALUES (?, ?, ?, 0, ?)
+               ON CONFLICT(item_id, location_id) DO UPDATE SET
+                 quantity=item_stocks.quantity + excluded.quantity,
+                 updated_at=excluded.updated_at""",
+            (item_id, location_id, quantity, now),
+        )
+        total = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM item_stocks WHERE item_id=?", (item_id,)).fetchone()[0]
+        conn.execute("UPDATE items SET quantity=?, location_id=COALESCE(location_id, ?), updated_at=? WHERE id=?", (total, location_id, now, item_id))
+        record_inventory_event(conn, item_id, quantity, "purchase")
+        conn.execute("DELETE FROM shopping_list WHERE item_id=?", (item_id,))
+        conn.commit()
+    return RedirectResponse("/shopping?bought=1", status_code=303)
 
 
 @app.post("/shopping/settings")

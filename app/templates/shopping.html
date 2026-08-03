@@ -12,11 +12,44 @@
   </form>
 
   <section class="shopping-section"><div class="shopping-section-title"><h2>To buy</h2><span>{{ listed|length }}</span></div>
-    <div class="shopping-list">{% for item in listed %}<article><div class="shopping-item-photo">{% if item.image_url %}<img src="{{ item.image_url }}" alt="">{% else %}<span>{{ item.icon }}</span>{% endif %}</div><div><h3><a href="/items/{{ item.id }}?return_to=/shopping">{{ item.name }}</a></h3><p>{{ item.reason }}</p><small>{% if item.automatic %}Added by Assistant{% else %}Added manually{% endif %}</small></div><form method="post" action="/shopping/{{ item.id }}/remove"><button type="submit">Remove</button></form></article>{% else %}<div class="shopping-empty"><strong>Your list is empty.</strong><span>Add an item manually or use a recommendation below.</span></div>{% endfor %}</div>
+    <div class="shopping-list">{% for item in listed %}<article><label class="shopping-check-wrap"><input class="shopping-check" type="checkbox" data-item-id="{{ item.id }}" data-item-name="{{ item.name }}" data-unit="{{ item.unit }}" data-location-id="{{ item.location_id or '' }}" aria-label="Mark {{ item.name }} bought"><span>✓</span></label><div class="shopping-item-photo">{% if item.image_url %}<img src="{{ item.image_url }}" alt="">{% else %}<span>{{ item.icon }}</span>{% endif %}</div><div><h3><a href="/items/{{ item.id }}?return_to=/shopping">{{ item.name }}</a></h3><p>{{ item.reason }}</p><small>{% if item.automatic %}Added by Assistant{% else %}Added manually{% endif %}</small></div><form method="post" action="/shopping/{{ item.id }}/remove"><button type="submit">Remove</button></form></article>{% else %}<div class="shopping-empty"><strong>Your list is empty.</strong><span>Add an item manually or use a recommendation below.</span></div>{% endfor %}</div>
   </section>
 
   <section class="shopping-section"><div class="shopping-section-title"><h2>Recommended</h2><span>{{ recommendations|length }}</span></div>
     <div class="recommendation-list">{% for item in recommendations %}<article><div><h3>{{ item.name }}</h3><p>{{ item.reason }}</p><span class="confidence {{ item.confidence }}">{{ item.confidence }} confidence</span></div><form method="post" action="/shopping/{{ item.id }}/add"><input type="hidden" name="return_to" value="/shopping"><button class="shopping-add" type="submit">Add</button></form></article>{% else %}<div class="shopping-empty"><strong>No purchases recommended right now.</strong><span>{{ learning_count }} item{% if learning_count != 1 %}s are{% else %} is{% endif %} still building usage history.</span></div>{% endfor %}</div>
   </section>
+
+  <dialog id="boughtDialog" class="bought-dialog">
+    <form id="boughtForm" method="post">
+      <div class="bought-icon">✓</div><p class="eyebrow">CONFIRM PURCHASE</p><h2>Did you buy <span id="boughtName"></span>?</h2><p>Confirming adds unopened stock and removes it from this list.</p>
+      <label class="field"><span>Quantity bought</span><input id="boughtQuantity" type="number" name="quantity" min="0.25" step="0.25" value="1" required><small id="boughtUnit"></small></label>
+      <label class="field"><span>Put it in</span><select id="boughtLocation" name="location_id" required>{% for location in locations %}<option value="{{ location.id }}">{{ location.name }} · {{ location.kind|title }}</option>{% endfor %}</select></label>
+      <div class="bought-actions"><button id="cancelBought" class="secondary-button" type="button">No, go back</button><button class="save-button" type="submit">Yes, add to inventory</button></div>
+    </form>
+  </dialog>
 </section>
 {% endblock %}
+{% block scripts %}<script>
+const boughtDialog = document.getElementById('boughtDialog');
+const boughtForm = document.getElementById('boughtForm');
+let activeShoppingCheck = null;
+document.querySelectorAll('.shopping-check').forEach(check => check.addEventListener('change', () => {
+  if (!check.checked) return;
+  activeShoppingCheck = check;
+  document.getElementById('boughtName').textContent = check.dataset.itemName;
+  document.getElementById('boughtUnit').textContent = check.dataset.unit || 'item';
+  document.getElementById('boughtQuantity').value = '1';
+  if (check.dataset.locationId) document.getElementById('boughtLocation').value = check.dataset.locationId;
+  boughtForm.action = '/shopping/' + check.dataset.itemId + '/buy';
+  boughtDialog.showModal();
+}));
+document.getElementById('cancelBought').addEventListener('click', () => {
+  if (activeShoppingCheck) activeShoppingCheck.checked = false;
+  activeShoppingCheck = null;
+  boughtDialog.close();
+});
+boughtDialog.addEventListener('cancel', event => {
+  event.preventDefault();
+  document.getElementById('cancelBought').click();
+});
+</script>{% endblock %}
