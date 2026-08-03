@@ -30,7 +30,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.9.3")
+APP_VERSION = os.getenv("APP_VERSION", "1.9.4")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -471,22 +471,40 @@ def call_dinner_llm(system: str, user_data: dict, temperature: float = 0.7, max_
 
 
 def ask_dinner_picks(inventory: list[dict]) -> list[dict]:
-    result = call_dinner_llm(
-        "Use your configured household food profile and the supplied pantry inventory. Pick up to three distinct dinner ideas. "
-        "Prefer opened and soon-expiring food. Do not write recipes yet. Return JSON only as "
-        "{\"meals\":[{\"name\":\"...\",\"summary\":\"one short sentence\"}]}. Do not add other keys.",
-        {"inventory": compact_dinner_inventory(inventory)}, 0.7, 800,
-    )
-    meals = result.get("meals")
-    if not isinstance(meals, list) or not meals:
-        raise RuntimeError("The LLM returned no dinner choices.")
-    picks = []
-    for meal in meals[:3]:
-        if isinstance(meal, dict) and str(meal.get("name", "")).strip():
-            picks.append({"name": str(meal["name"]).strip()[:160], "summary": str(meal.get("summary", "")).strip()[:300]})
-    if not picks:
-        raise RuntimeError("The LLM returned dinner choices in an unreadable format.")
-    return picks
+    prompts = [
+        "Use your configured household food profile and the supplied pantry inventory. Choose three distinct dinner ideas. "
+        "Prefer opened and soon-expiring food. Do not write recipes. Return one JSON object with a meals array. "
+        "Every meal must contain a real dish name and a one-sentence summary. Never return examples, instructions, placeholders, or ellipses.",
+        "Create three actual dinner choices from this inventory now. Return only a JSON object containing a meals array; "
+        "each array entry must have the keys name and summary filled with real food content. No template text and no explanation.",
+    ]
+    last_error = "The LLM returned no usable dinner choices."
+    for attempt, prompt in enumerate(prompts):
+        try:
+            result = call_dinner_llm(
+                prompt,
+                {"task": "choose_actual_dinners", "inventory": compact_dinner_inventory(inventory)},
+                0.7 if attempt == 0 else 0.25, 800,
+            )
+        except RuntimeError as exc:
+            last_error = str(exc)
+            if attempt == 0 and "response could not be read" in last_error.lower():
+                continue
+            raise
+        meals = result.get("meals")
+        picks = []
+        if isinstance(meals, list):
+            for meal in meals[:3]:
+                if not isinstance(meal, dict):
+                    continue
+                name = str(meal.get("name", "")).strip()
+                summary = str(meal.get("summary", "")).strip()
+                if name and name != "..." and "placeholder" not in name.lower():
+                    picks.append({"name": name[:160], "summary": summary[:300]})
+        if picks:
+            return picks
+        last_error = "The LLM returned no usable dinner choices."
+    raise RuntimeError(last_error)
 
 
 def ask_dinner_recipe(inventory: list[dict], meal_name: str) -> dict:
