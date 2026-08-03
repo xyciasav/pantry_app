@@ -45,11 +45,11 @@ Changing the password or signing key immediately invalidates existing sessions. 
 
 ### Version and image name
 
-The default Docker image is named `shelf-life:1.8.2`, and the same version appears in the website header, footer, and `/health` response.
+The default Docker image is named `shelf-life:1.9.0`, and the same version appears in the website header, footer, and `/health` response.
 
 Portainer stack variables can override these values:
 
-- `PANTRY_VERSION=1.8.2` controls the Docker tag and displayed website version.
+- `PANTRY_VERSION=1.9.0` controls the Docker tag and displayed website version.
 - `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
 
 For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.
@@ -68,6 +68,19 @@ For each release, change `PANTRY_VERSION` to the new version before rebuilding t
 - Custom categories, item photo uploads, and downloadable/restorable database backups
 - Read-only inventory API for local LLM integrations using `PANTRY_API_KEY`
 - Renameable product groups and an attention-first, color-coded inventory list
+- A private What's for Dinner assistant that uses current inventory, expiry dates, and a saved household taste profile
+
+## Dinner Assistant
+
+Shelf Life can call an OpenAI-compatible local LLM proxy directly. Add these stack environment variables in Portainer:
+
+```text
+PANTRY_LLM_URL=http://10.0.0.230:8084/v1
+PANTRY_LLM_MODEL=lmstudio-proxy-ha
+PANTRY_LLM_API_KEY=YOUR_PROXY_KEY
+```
+
+Leave `PANTRY_LLM_API_KEY` blank if the proxy does not require authentication. The API key stays in the container environment and is never shown or saved in the pantry database. The Dinner page sends in-stock item names, amounts, ingredient labels, expiry dates, household size, and your saved taste profile to the configured proxy. It does not change inventory automatically.
 
 ## Local LLM inventory API
 
