@@ -30,7 +30,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.8.1")
+APP_VERSION = os.getenv("APP_VERSION", "1.8.2")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -801,8 +801,7 @@ def item_stock_page(request: Request, item_id: int, return_to: str = "/"):
                FROM stock_batches JOIN locations ON locations.id=stock_batches.location_id
                WHERE stock_batches.item_id=? AND stock_batches.quantity > 0
                ORDER BY CASE WHEN expires_on IS NULL THEN 1 ELSE 0 END, expires_on, created_at""", (item_id,))]
-        locations = get_locations(conn)
-    return render(request, "stock.html", item=dict(item), stocks=stocks, batches=batches, locations=locations, today=date.today().isoformat(), return_to=safe_return_path(return_to))
+    return render(request, "stock.html", item=dict(item), stocks=stocks, batches=batches, today=date.today().isoformat(), return_to=safe_return_path(return_to))
 
 
 @app.get("/items/{item_id}/group", response_class=HTMLResponse)

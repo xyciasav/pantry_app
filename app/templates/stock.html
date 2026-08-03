@@ -3,7 +3,7 @@
 {% block content %}
 <section class="form-shell stock-shell">
   <a class="back" href="{{ return_to }}">← Back</a>
-  <div class="form-heading"><p class="eyebrow">DATED STOCK BATCHES</p><h1>{{ item.name }}</h1><p>Keep each purchase separate so older and newer packages can have different dates.</p></div>
+  <div class="form-heading stock-heading"><div><p class="eyebrow">DATED STOCK BATCHES</p><h1>{{ item.name }}</h1><p>Keep each purchase separate so older and newer packages can have different dates.</p></div><a class="save-button" href="#add-purchase">＋ Add new purchase</a></div>
 
   <form method="post" action="/items/{{ item.id }}/batches/save"><input type="hidden" name="return_to" value="{{ return_to }}"><div class="batch-list">
     {% for batch in batches %}
@@ -17,9 +17,9 @@
     {% else %}<div class="shopping-empty"><strong>No stock batches yet.</strong><span>Add the first purchase below.</span></div>{% endfor %}
   </div><div class="stock-save-all"><button class="save-button" type="submit">Save all batches</button></div></form>
 
-  <form class="batch-card batch-new" method="post" action="/items/{{ item.id }}/batches">
+  <form id="add-purchase" class="batch-card batch-new" method="post" action="/items/{{ item.id }}/batches">
     <input type="hidden" name="return_to" value="{{ return_to }}">
-    <div class="batch-new-title"><strong>Add another purchase</strong><span>A new package, case, or dated lot</span></div>
+    <div class="batch-new-title"><strong>Add more {{ item.name }}</strong><span>A new package, case, or dated lot</span></div>
     <label class="field"><span>Location</span><select name="location_id">{% for location in locations %}<option value="{{ location.id }}">{{ location.name }}</option>{% endfor %}</select></label>
     <label class="field"><span>Total</span><input type="number" min="0.25" step="0.25" name="quantity" value="1" required></label>
     <label class="field"><span>Open</span><input type="number" min="0" step="0.25" name="opened" value="0" required></label>
