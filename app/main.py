@@ -30,7 +30,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.6.8")
+APP_VERSION = os.getenv("APP_VERSION", "1.7.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -232,6 +232,28 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS inventory_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                delta REAL NOT NULL,
+                event_type TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS shopping_list (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NOT NULL UNIQUE REFERENCES items(id) ON DELETE CASCADE,
+                reason TEXT NOT NULL DEFAULT '',
+                automatic INTEGER NOT NULL DEFAULT 0,
+                added_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('shopping_mode', 'analysis')")
+        conn.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('analysis_days', '7')")
+        conn.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('analysis_started_at', ?)", (datetime.now().isoformat(timespec="seconds"),))
         for key, (label, icon) in DEFAULT_CATEGORIES.items():
             conn.execute("INSERT OR IGNORE INTO categories (key, label, icon, custom) VALUES (?, ?, ?, 0)", (key, label, icon))
         columns = {row[1] for row in conn.execute("PRAGMA table_info(items)")}
@@ -293,6 +315,64 @@ def safe_return_path(value: str | None, fallback: str = "/") -> str:
     return value if value and value.startswith("/") and not value.startswith("//") else fallback
 
 
+def shopping_settings(conn: sqlite3.Connection) -> dict:
+    values = {row["key"]: row["value"] for row in conn.execute("SELECT key, value FROM app_settings")}
+    return {"mode": values.get("shopping_mode", "analysis"), "days": int(values.get("analysis_days", "7")), "started_at": values.get("analysis_started_at", datetime.now().isoformat(timespec="seconds"))}
+
+
+def record_inventory_event(conn: sqlite3.Connection, item_id: int, delta: float, event_type: str) -> None:
+    if abs(delta) > 0.0001:
+        conn.execute("INSERT INTO inventory_events (item_id, delta, event_type, created_at) VALUES (?, ?, ?, ?)", (item_id, delta, event_type, datetime.now().isoformat(timespec="seconds")))
+
+
+def shopping_analysis(conn: sqlite3.Connection, item: dict, settings: dict) -> dict:
+    since = (datetime.now() - timedelta(days=settings["days"])).isoformat(timespec="seconds")
+    usage = conn.execute(
+        """SELECT COALESCE(SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END), 0) AS used,
+                  COUNT(CASE WHEN delta < 0 THEN 1 END) AS uses,
+                  MIN(created_at) AS first_event
+           FROM inventory_events WHERE item_id=? AND created_at>=?""",
+        (item["id"], since),
+    ).fetchone()
+    daily_use = usage["used"] / settings["days"] if settings["days"] else 0
+    days_left = item["unopened_quantity"] / daily_use if daily_use > 0 else None
+    observed_days = max(0, (datetime.now() - datetime.fromisoformat(settings["started_at"])).days)
+    enough_history = observed_days >= settings["days"] and usage["uses"] >= 2
+    should_buy = item["unopened_quantity"] <= item["low_at"] or (enough_history and days_left is not None and days_left <= 3)
+    if item["unopened_quantity"] <= item["low_at"]:
+        reason = f"{item['unopened_quantity']:g} unopened; low alert is {item['low_at']:g}"
+    elif enough_history and days_left is not None:
+        reason = f"About {days_left:.1f} days left based on {settings['days']}-day usage"
+    else:
+        remaining_days = max(0, settings["days"] - observed_days)
+        reason = f"Learning usage ({usage['uses']} decrease{'s' if usage['uses'] != 1 else ''} recorded; {remaining_days} day{'s' if remaining_days != 1 else ''} left)"
+    confidence = "high" if usage["uses"] >= 5 else "medium" if usage["uses"] >= 2 else "learning"
+    return {"should_buy": should_buy, "reason": reason, "daily_use": daily_use, "days_left": days_left, "confidence": confidence}
+
+
+def maybe_auto_add_shopping(conn: sqlite3.Connection, item_id: int) -> None:
+    settings = shopping_settings(conn)
+    if settings["mode"] != "assistant":
+        return
+    row = conn.execute(
+        """SELECT items.*, COALESCE(SUM(item_stocks.quantity),0) AS total_quantity,
+                  COALESCE(SUM(item_stocks.opened),0) AS opened_quantity
+           FROM items LEFT JOIN item_stocks ON item_stocks.item_id=items.id
+           WHERE items.id=? GROUP BY items.id""",
+        (item_id,),
+    ).fetchone()
+    if not row:
+        return
+    item = view_item(row)
+    analysis = shopping_analysis(conn, item, settings)
+    if analysis["should_buy"]:
+        conn.execute(
+            """INSERT INTO shopping_list (item_id, reason, automatic, added_at) VALUES (?, ?, 1, ?)
+               ON CONFLICT(item_id) DO UPDATE SET reason=excluded.reason""",
+            (item_id, analysis["reason"], datetime.now().isoformat(timespec="seconds")),
+        )
+
+
 def item_art_url(name: str, category: str) -> str | None:
     words = set(re.findall(r"[a-z]+", name.lower()))
     normalized = " ".join(re.findall(r"[a-z]+", name.lower()))
@@ -333,7 +413,9 @@ def view_item(row: sqlite3.Row) -> dict:
 def render(request: Request, name: str, **context) -> HTMLResponse:
     template = templates.get_template(name)
     generic_images = [{"url": f"/static/items/{path.name}", "label": path.stem.replace("-", " ").title()} for path in sorted((BASE_DIR / "static" / "items").glob("*.webp"))]
-    return HTMLResponse(template.render(request=request, categories=CATEGORIES, locations=get_locations(), generic_images=generic_images, app_version=APP_VERSION, **context))
+    with closing(db()) as conn:
+        shopping_count = conn.execute("SELECT COUNT(*) FROM shopping_list").fetchone()[0]
+    return HTMLResponse(template.render(request=request, categories=CATEGORIES, locations=get_locations(), generic_images=generic_images, shopping_count=shopping_count, app_version=APP_VERSION, **context))
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -564,7 +646,9 @@ async def save_item(
                 "INSERT INTO items (name, category, location, location_id, quantity, unit, low_at, bought_on, expires_on, notes, ingredients, barcode, image_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (name.strip(), category if category in CATEGORIES else "other", location_row["kind"], location_id, total_quantity, unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), ingredients.strip(), barcode.strip(), saved_image_url, now, now),
             )
-            conn.execute("INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at) VALUES (?, ?, ?, ?, ?)", (cursor.lastrowid, location_id, total_quantity, opened, now))
+            new_item_id = cursor.lastrowid
+            conn.execute("INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at) VALUES (?, ?, ?, ?, ?)", (new_item_id, location_id, total_quantity, opened, now))
+            record_inventory_event(conn, new_item_id, total_quantity, "purchase")
         conn.commit()
     return RedirectResponse(safe_return_path(return_to), status_code=303)
 
@@ -573,6 +657,7 @@ async def save_item(
 def change_quantity(item_id: int, delta: float = Form(...), return_to: str = Form("/")):
     with closing(db()) as conn:
         now = datetime.now().isoformat(timespec="seconds")
+        previous_total = conn.execute("SELECT COALESCE(SUM(quantity), 0) FROM item_stocks WHERE item_id = ?", (item_id,)).fetchone()[0]
         stock = conn.execute(
             """SELECT * FROM item_stocks WHERE item_id = ?
                ORDER BY CASE WHEN quantity - opened > 0 THEN 0 ELSE 1 END, CASE WHEN opened > 0 THEN 0 ELSE 1 END, id LIMIT 1""",
@@ -595,6 +680,8 @@ def change_quantity(item_id: int, delta: float = Form(...), return_to: str = For
         cursor = conn.execute("UPDATE item_stocks SET quantity=?, opened=?, updated_at=? WHERE id=?", (new_quantity, new_opened, now, stock["id"]))
         total = conn.execute("SELECT COALESCE(SUM(quantity), 0) FROM item_stocks WHERE item_id = ?", (item_id,)).fetchone()[0]
         conn.execute("UPDATE items SET quantity=?, updated_at=? WHERE id=?", (total, now, item_id))
+        record_inventory_event(conn, item_id, total - previous_total, "restock" if total > previous_total else "use")
+        maybe_auto_add_shopping(conn, item_id)
         conn.commit()
     if not cursor.rowcount:
         raise HTTPException(404)
@@ -768,6 +855,7 @@ async def update_item_stock(item_id: int, request: Request):
     with closing(db()) as conn:
         if not conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
             raise HTTPException(404)
+        previous_total = conn.execute("SELECT COALESCE(SUM(quantity), 0) FROM item_stocks WHERE item_id = ?", (item_id,)).fetchone()[0]
         location_ids = [row[0] for row in conn.execute("SELECT id FROM locations")]
         for location_id in location_ids:
             try:
@@ -785,6 +873,8 @@ async def update_item_stock(item_id: int, request: Request):
             )
         total = conn.execute("SELECT COALESCE(SUM(quantity), 0) FROM item_stocks WHERE item_id = ?", (item_id,)).fetchone()[0]
         conn.execute("UPDATE items SET quantity=?, updated_at=? WHERE id=?", (total, now, item_id))
+        record_inventory_event(conn, item_id, total - previous_total, "restock" if total > previous_total else "use")
+        maybe_auto_add_shopping(conn, item_id)
         conn.commit()
     return RedirectResponse(return_to, status_code=303)
 
@@ -849,7 +939,84 @@ def manage_page(request: Request, restored: str = ""):
                FROM categories LEFT JOIN items ON items.category = categories.key
                GROUP BY categories.key ORDER BY categories.label"""
         )]
-    return render(request, "manage.html", managed_categories=managed_categories, restored=restored, api_enabled=bool(API_KEY))
+        shop_settings = shopping_settings(conn)
+    return render(request, "manage.html", managed_categories=managed_categories, restored=restored, api_enabled=bool(API_KEY), shop_settings=shop_settings)
+
+
+@app.get("/shopping", response_class=HTMLResponse)
+def shopping_page(request: Request):
+    with closing(db()) as conn:
+        settings = shopping_settings(conn)
+        rows = conn.execute(
+            """SELECT items.*, shopping_list.reason, shopping_list.automatic, shopping_list.added_at,
+                      COALESCE(SUM(item_stocks.quantity),0) AS total_quantity,
+                      COALESCE(SUM(item_stocks.opened),0) AS opened_quantity
+               FROM shopping_list JOIN items ON items.id=shopping_list.item_id
+               LEFT JOIN item_stocks ON item_stocks.item_id=items.id
+               GROUP BY items.id ORDER BY shopping_list.added_at DESC"""
+        ).fetchall()
+        listed = []
+        listed_ids = set()
+        for row in rows:
+            item = view_item(row)
+            item.update(reason=row["reason"], automatic=bool(row["automatic"]), added_at=row["added_at"])
+            listed.append(item)
+            listed_ids.add(item["id"])
+        inventory_rows = conn.execute(
+            """SELECT items.*, COALESCE(SUM(item_stocks.quantity),0) AS total_quantity,
+                      COALESCE(SUM(item_stocks.opened),0) AS opened_quantity
+               FROM items LEFT JOIN item_stocks ON item_stocks.item_id=items.id GROUP BY items.id"""
+        ).fetchall()
+        recommendations = []
+        learning = []
+        for row in inventory_rows:
+            item = view_item(row)
+            analysis = shopping_analysis(conn, item, settings)
+            item.update(analysis)
+            if item["id"] not in listed_ids and analysis["should_buy"]:
+                recommendations.append(item)
+            elif analysis["confidence"] == "learning":
+                learning.append(item)
+    recommendations.sort(key=lambda item: (item["unopened_quantity"], item["name"].lower()))
+    return render(request, "shopping.html", listed=listed, recommendations=recommendations, learning_count=len(learning), shop_settings=settings)
+
+
+@app.post("/shopping/{item_id}/add")
+def add_to_shopping(item_id: int, return_to: str = Form("/shopping")):
+    with closing(db()) as conn:
+        row = conn.execute("SELECT name FROM items WHERE id=?", (item_id,)).fetchone()
+        if not row:
+            raise HTTPException(404)
+        conn.execute(
+            """INSERT INTO shopping_list (item_id, reason, automatic, added_at) VALUES (?, 'Added manually', 0, ?)
+               ON CONFLICT(item_id) DO UPDATE SET reason='Added manually', automatic=0""",
+            (item_id, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.commit()
+    return RedirectResponse(safe_return_path(return_to, "/shopping"), status_code=303)
+
+
+@app.post("/shopping/{item_id}/remove")
+def remove_from_shopping(item_id: int):
+    with closing(db()) as conn:
+        conn.execute("DELETE FROM shopping_list WHERE item_id=?", (item_id,))
+        conn.commit()
+    return RedirectResponse("/shopping", status_code=303)
+
+
+@app.post("/shopping/settings")
+def update_shopping_settings(mode: str = Form(...), analysis_days: int = Form(7)):
+    if mode not in {"analysis", "assistant"} or analysis_days not in {7, 14, 30, 60}:
+        raise HTTPException(400, "Choose a valid shopping mode and analysis window")
+    with closing(db()) as conn:
+        conn.execute("INSERT INTO app_settings (key,value) VALUES ('shopping_mode',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (mode,))
+        conn.execute("INSERT INTO app_settings (key,value) VALUES ('analysis_days',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(analysis_days),))
+        if mode == "assistant":
+            item_ids = [row[0] for row in conn.execute("SELECT id FROM items")]
+            for item_id in item_ids:
+                maybe_auto_add_shopping(conn, item_id)
+        conn.commit()
+    return RedirectResponse("/shopping", status_code=303)
 
 
 @app.post("/categories")

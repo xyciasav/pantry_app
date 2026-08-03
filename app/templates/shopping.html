@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Shopping list · Shelf Life{% endblock %}
+{% block content %}
+<section class="shopping-shell">
+  <div class="shopping-heading"><div><p class="eyebrow">PLAN THE NEXT SHOP</p><h1>Shopping list</h1><p>Analysis watches and recommends. Assistant adds items when the numbers say it is time.</p></div><span class="mode-pill {{ shop_settings.mode }}">{{ shop_settings.mode|title }} mode</span></div>
+
+  <form class="mode-picker" method="post" action="/shopping/settings">
+    <label class="mode-option"><input type="radio" name="mode" value="analysis" {% if shop_settings.mode == 'analysis' %}checked{% endif %}><span><strong>Analysis</strong><small>Observe and recommend. Never add automatically.</small></span></label>
+    <label class="mode-option"><input type="radio" name="mode" value="assistant" {% if shop_settings.mode == 'assistant' %}checked{% endif %}><span><strong>Assistant</strong><small>Automatically add low or soon-needed items.</small></span></label>
+    <label class="analysis-window"><span>Learning window</span><select name="analysis_days">{% for days in [7,14,30,60] %}<option value="{{ days }}" {% if shop_settings.days == days %}selected{% endif %}>{{ days }} days</option>{% endfor %}</select></label>
+    <button class="save-button">Save mode</button>
+  </form>
+
+  <section class="shopping-section"><div class="shopping-section-title"><h2>To buy</h2><span>{{ listed|length }}</span></div>
+    <div class="shopping-list">{% for item in listed %}<article><div class="shopping-item-photo">{% if item.image_url %}<img src="{{ item.image_url }}" alt="">{% else %}<span>{{ item.icon }}</span>{% endif %}</div><div><h3><a href="/items/{{ item.id }}?return_to=/shopping">{{ item.name }}</a></h3><p>{{ item.reason }}</p><small>{% if item.automatic %}Added by Assistant{% else %}Added manually{% endif %}</small></div><form method="post" action="/shopping/{{ item.id }}/remove"><button type="submit">Remove</button></form></article>{% else %}<div class="shopping-empty"><strong>Your list is empty.</strong><span>Add an item manually or use a recommendation below.</span></div>{% endfor %}</div>
+  </section>
+
+  <section class="shopping-section"><div class="shopping-section-title"><h2>Recommended</h2><span>{{ recommendations|length }}</span></div>
+    <div class="recommendation-list">{% for item in recommendations %}<article><div><h3>{{ item.name }}</h3><p>{{ item.reason }}</p><span class="confidence {{ item.confidence }}">{{ item.confidence }} confidence</span></div><form method="post" action="/shopping/{{ item.id }}/add"><input type="hidden" name="return_to" value="/shopping"><button class="shopping-add" type="submit">Add</button></form></article>{% else %}<div class="shopping-empty"><strong>No purchases recommended right now.</strong><span>{{ learning_count }} item{% if learning_count != 1 %}s are{% else %} is{% endif %} still building usage history.</span></div>{% endfor %}</div>
+  </section>
+</section>
+{% endblock %}

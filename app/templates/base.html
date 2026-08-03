@@ -17,6 +17,7 @@
       {% if request.url.path == '/inventory' %}<a class="list-button" href="/" aria-label="Card grid" title="Card grid">▦<span>Grid</span></a>{% else %}<a class="list-button" href="/inventory" aria-label="Inventory list" title="Inventory list">☷<span>List</span></a>{% endif %}
       <a class="manage-button" href="/manage" aria-label="Manage Shelf Life" title="Manage">⚙<span>Manage</span></a>
       <a class="secondary-button" href="/locations">Locations</a>
+      <a class="shopping-button" href="/shopping" aria-label="Shopping list">🛒<span>Shopping{% if shopping_count %} <b>{{ shopping_count }}</b>{% endif %}</span></a>
       <a class="scan-button" href="/scan">▣ Scan</a>
       <a class="add-button" href="/items/new"><span>＋</span> Add item</a>
       <form class="logout-form" method="post" action="/logout"><button aria-label="Log out" title="Log out">↪</button></form>
