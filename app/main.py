@@ -30,7 +30,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.8.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.8.1")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -263,6 +263,8 @@ def init_db() -> None:
             "image_url": "TEXT",
             "ingredients": "TEXT NOT NULL DEFAULT ''",
             "group_id": "INTEGER REFERENCES product_groups(id) ON DELETE SET NULL",
+            "opened_low": "INTEGER NOT NULL DEFAULT 0",
+            "essential": "INTEGER NOT NULL DEFAULT 0",
         }.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE items ADD COLUMN {name} {definition}")
@@ -352,6 +354,7 @@ def refresh_stock_from_batches(conn: sqlite3.Connection, item_id: int) -> float:
         "UPDATE items SET quantity=?, expires_on=?, bought_on=COALESCE(?, bought_on), updated_at=? WHERE id=?",
         (summary["total"], summary["next_expiry"], summary["latest_purchase"], now, item_id),
     )
+    conn.execute("UPDATE items SET opened_low=0 WHERE id=? AND NOT EXISTS (SELECT 1 FROM stock_batches WHERE item_id=? AND opened>0 AND quantity>0)", (item_id, item_id))
     return float(summary["total"])
 
 
@@ -401,8 +404,12 @@ def shopping_analysis(conn: sqlite3.Connection, item: dict, settings: dict) -> d
     days_left = item["unopened_quantity"] / daily_use if daily_use > 0 else None
     observed_days = max(0, (datetime.now() - datetime.fromisoformat(settings["started_at"])).days)
     enough_history = observed_days >= settings["days"] and usage["uses"] >= 2
-    should_buy = item["unopened_quantity"] <= item["low_at"] or (enough_history and days_left is not None and days_left <= 3)
-    if item["unopened_quantity"] <= item["low_at"]:
+    should_buy = item["state"] in {"out", "low"} or (enough_history and days_left is not None and days_left <= 3)
+    if item["opened_low"]:
+        reason = "Opened package marked getting low" + (" · essential" if item["essential"] else "")
+    elif item["state"] == "out":
+        reason = "Out of stock" + (" · essential" if item["essential"] else "")
+    elif item["state"] == "low":
         reason = f"{item['unopened_quantity']:g} unopened; low alert is {item['low_at']:g}"
     elif enough_history and days_left is not None:
         reason = f"About {days_left:.1f} days left based on {settings['days']}-day usage"
@@ -453,9 +460,13 @@ def view_item(row: sqlite3.Row) -> dict:
     today = date.today()
     expires = date.fromisoformat(item["expires_on"]) if item["expires_on"] else None
     days_left = (expires - today).days if expires else None
+    item["opened_low"] = bool(item.get("opened_low", 0) and item["opened_quantity"] > 0)
+    item["essential"] = bool(item.get("essential", 0))
     if item["quantity"] <= 0:
         state = "out"
-    elif item["unopened_quantity"] <= item["low_at"]:
+    elif item["opened_low"]:
+        state = "low"
+    elif item["unopened_quantity"] > 0 and item["unopened_quantity"] <= item["low_at"]:
         state = "low"
     elif days_left is not None and days_left < 0:
         state = "expired"
@@ -468,6 +479,7 @@ def view_item(row: sqlite3.Row) -> dict:
         icon=CATEGORIES.get(item["category"], CATEGORIES["other"])[1],
         days_left=days_left,
         state=state,
+        critical=item["essential"] and state in {"out", "low"},
     )
     item["image_url"] = item.get("image_url") or item_art_url(item["name"], item["category"])
     return item
@@ -601,7 +613,7 @@ def home(request: Request, location: str = "all", category: str = "all", q: str 
             "state": state, "days_left": earliest["days_left"] if earliest else None, "expires_on": earliest["expires_on"] if earliest else None,
             "variants": variants,
         })
-    items = sorted(visible_items, key=lambda item: (item["expires_on"] is None, item["expires_on"] or "", item["name"].lower()))
+    items = sorted(visible_items, key=lambda item: (not bool(item.get("critical")), item["expires_on"] is None, item["expires_on"] or "", item["name"].lower()))
     category_sections = []
     for category_key, (category_label, category_icon) in CATEGORIES.items():
         category_items = [item for item in items if item["category"] == category_key]
@@ -617,6 +629,7 @@ def home(request: Request, location: str = "all", category: str = "all", q: str 
         "attention": sum(i["state"] in {"out", "low", "expired", "expiring"} for i in items),
         "expiring": sum(i["state"] in {"expired", "expiring"} for i in items),
         "low": sum(i["state"] in {"out", "low"} for i in items),
+        "critical": sum(bool(i.get("critical")) for i in items),
     }
     return render(request, "index.html", items=items, category_sections=category_sections, counts=counts, filters={"location": location, "category": category, "q": q}, return_to=str(request.url.path) + (f"?{request.url.query}" if request.url.query else ""))
 
@@ -663,6 +676,19 @@ def edit_item(request: Request, item_id: int, return_to: str = "/"):
     if not row:
         raise HTTPException(404)
     return render(request, "form.html", item=dict(row), is_new=False, today=date.today().isoformat(), return_to=safe_return_path(return_to))
+
+
+@app.post("/items/{item_id}/flags")
+def update_item_flags(item_id: int, essential: str | None = Form(None), opened_low: str | None = Form(None), return_to: str = Form("/")):
+    with closing(db()) as conn:
+        item = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+        if not item:
+            raise HTTPException(404)
+        has_open_stock = conn.execute("SELECT COALESCE(SUM(opened),0) FROM item_stocks WHERE item_id=?", (item_id,)).fetchone()[0] > 0
+        conn.execute("UPDATE items SET essential=?, opened_low=?, updated_at=? WHERE id=?", (1 if essential else 0, 1 if opened_low and has_open_stock else 0, datetime.now().isoformat(timespec="seconds"), item_id))
+        maybe_auto_add_shopping(conn, item_id)
+        conn.commit()
+    return RedirectResponse(safe_return_path(return_to, f"/items/{item_id}"), status_code=303)
 
 
 @app.post("/items/save")
@@ -909,11 +935,13 @@ def inventory_list(request: Request, q: str = "", status: str = "all"):
         item["stocks"] = stocks.get(item["id"], [])
     if status == "low":
         items = [item for item in items if item["state"] in {"out", "low"}]
+    elif status == "critical":
+        items = [item for item in items if item["critical"]]
     elif status == "expiring":
         items = [item for item in items if item["state"] in {"expired", "expiring"}]
     elif status != "all":
         raise HTTPException(400, "Invalid inventory status filter")
-    items.sort(key=lambda item: (state_order[item["state"]], item["unopened_quantity"], item["expires_on"] is None, item["expires_on"] or "", item["name"].lower()))
+    items.sort(key=lambda item: (not item["critical"], state_order[item["state"]], item["unopened_quantity"], item["expires_on"] is None, item["expires_on"] or "", item["name"].lower()))
     return render(request, "list.html", items=items, q=q, status=status, return_to=str(request.url.path) + (f"?{request.url.query}" if request.url.query else ""))
 
 
@@ -1395,6 +1423,7 @@ def inventory_api():
             "category": item["category_label"], "unopened": item["unopened_quantity"],
             "open": item["opened_quantity"], "total": item["quantity"], "unit": item["unit"],
             "bought_on": item["bought_on"], "expires_on": item["expires_on"], "state": item["state"],
+            "essential": item["essential"], "opened_low": item["opened_low"], "critical": item["critical"],
             "barcode": item.get("barcode"), "notes": item["notes"], "ingredients": item.get("ingredients", ""), "locations": stocks.get(item["id"], []), "batches": batches.get(item["id"], []),
         })
     return {"version": APP_VERSION, "generated_at": datetime.now().isoformat(timespec="seconds"), "items": inventory}

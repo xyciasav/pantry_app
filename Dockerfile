@@ -1,5 +1,5 @@
 FROM python:3.12-slim
-ARG APP_VERSION=1.8.0
+ARG APP_VERSION=1.8.1
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PANTRY_DATA_DIR=/data APP_VERSION=${APP_VERSION}
 LABEL org.opencontainers.image.title="Shelf Life" \
       org.opencontainers.image.version="${APP_VERSION}" \

@@ -8,11 +8,17 @@
     <div class="detail-summary">
       <p class="eyebrow">{{ item.icon }} {{ item.category_label|upper }}</p>
       <h1>{{ item.name }}</h1>
-      <p class="detail-subtitle">{% if item.state == 'out' %}Out of stock{% elif item.state == 'low' %}Running low{% elif item.state == 'expired' %}Expired{% elif item.state == 'expiring' %}Expiring soon{% else %}Stock looks good{% endif %}</p>
+      <p class="detail-subtitle">{% if item.critical %}Code red — essential item needs attention{% elif item.opened_low %}Opened package is getting low{% elif item.state == 'out' %}Out of stock{% elif item.state == 'low' %}Running low{% elif item.state == 'expired' %}Expired{% elif item.state == 'expiring' %}Expiring soon{% else %}Stock looks good{% endif %}</p>
       <div class="detail-total"><div><strong>{{ item.unopened_quantity|int if item.unopened_quantity == item.unopened_quantity|int else item.unopened_quantity }}</strong><span>Unopened</span></div><div><strong>{{ item.opened_quantity|int if item.opened_quantity == item.opened_quantity|int else item.opened_quantity }}</strong><span>Open</span></div></div>
       <div class="detail-actions"><a class="save-button" href="/items/{{ item.id }}/edit?return_to={{ return_to|urlencode }}">Edit item</a><a class="secondary-button" href="/items/{{ item.id }}/stock?return_to={{ return_to|urlencode }}">Manage stock</a><form method="post" action="/shopping/{{ item.id }}/add"><input type="hidden" name="return_to" value="/shopping"><button class="shopping-add" type="submit">Add to shopping list</button></form></div>
     </div>
   </div>
+  <form class="priority-panel{% if item.critical %} critical{% endif %}" method="post" action="/items/{{ item.id }}/flags">
+    <input type="hidden" name="return_to" value="/items/{{ item.id }}?return_to={{ return_to|urlencode }}">
+    <label><input type="checkbox" name="essential" value="1"{% if item.essential %} checked{% endif %}><span><b>★ Essential item</b><small>Treat running out as code red.</small></span></label>
+    <label{% if not item.opened_quantity %} class="disabled"{% endif %}><input type="checkbox" name="opened_low" value="1"{% if item.opened_low %} checked{% endif %}{% if not item.opened_quantity %} disabled{% endif %}><span><b>Opened package is getting low</b><small>{% if item.opened_quantity %}Use this when the open container is nearly empty.{% else %}Available when an opened package exists.{% endif %}</small></span></label>
+    <button class="save-button" type="submit">Save priority</button>
+  </form>
   <div class="detail-grid">
     <section class="detail-panel"><h2>Item details</h2><dl class="detail-fields"><div><dt>Unit</dt><dd>{{ item.unit }}</dd></div><div><dt>Low alert at</dt><dd>{{ item.low_at }}</dd></div><div><dt>Bought</dt><dd>{{ item.bought_on or 'Not set' }}</dd></div><div><dt>Expires</dt><dd>{{ item.expires_on or 'Not set' }}</dd></div><div><dt>Barcode</dt><dd>{{ item.barcode or 'Not set' }}</dd></div><div><dt>Last updated</dt><dd>{{ item.updated_at[:10] }}</dd></div></dl></section>
     <section class="detail-panel"><h2>Stock by location</h2><div class="detail-stock">{% for stock in stocks %}<div><span><strong>{{ stock.name }}</strong><br><small>{{ stock.kind|title }}</small></span><span>{{ stock.unopened|int if stock.unopened == stock.unopened|int else stock.unopened }} unopened{% if stock.opened %}<br>{{ stock.opened|int if stock.opened == stock.opened|int else stock.opened }} open{% endif %}</span></div>{% else %}<p>No stock locations have quantity.</p>{% endfor %}</div></section>

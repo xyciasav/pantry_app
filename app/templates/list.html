@@ -2,13 +2,13 @@
 {% block title %}Inventory list · Shelf Life{% endblock %}
 {% block content %}
 <section class="list-shell">
-  <div class="list-heading"><div><p class="eyebrow">QUICK STOCK VIEW</p><h1>{% if status == 'low' %}Running low{% elif status == 'expiring' %}Expiring items{% else %}Inventory list{% endif %}</h1><p>Needs attention first, then sorted from least to most unopened.</p></div><a class="secondary-button" href="/">Card view</a></div>
+  <div class="list-heading"><div><p class="eyebrow">QUICK STOCK VIEW</p><h1>{% if status == 'critical' %}Code red essentials{% elif status == 'low' %}Running low{% elif status == 'expiring' %}Expiring items{% else %}Inventory list{% endif %}</h1><p>Critical essentials first, then sorted from least to most unopened.</p></div><a class="secondary-button" href="/">Card view</a></div>
   <form class="list-search" method="get"><input type="hidden" name="status" value="{{ status }}"><label class="search"><span>⌕</span><input type="search" name="q" value="{{ q }}" placeholder="Search items or groups…" aria-label="Search inventory"></label><button class="save-button">Search</button>{% if status != 'all' %}<a class="secondary-button" href="/inventory">Clear filter</a>{% endif %}</form>
   <div class="inventory-table">
     <div class="inventory-head"><span>Item</span><span>Stock</span><span>Locations</span><span>Expires</span><span></span></div>
     {% for item in items %}
-    <article class="inventory-row state-{{ item.state }}">
-      <div class="inventory-name"><i></i><div><strong><a class="item-name-link" href="/items/{{ item.id }}?return_to={{ return_to|urlencode }}">{{ item.name }}</a></strong>{% if item.group_name %}<small>Grouped under {{ item.group_name }}</small>{% else %}<small>{{ item.category_label }}</small>{% endif %}</div></div>
+    <article class="inventory-row state-{{ item.state }}{% if item.critical %} state-critical{% endif %}">
+      <div class="inventory-name"><i></i><div><strong><a class="item-name-link" href="/items/{{ item.id }}?return_to={{ return_to|urlencode }}">{% if item.essential %}★ {% endif %}{{ item.name }}</a></strong>{% if item.opened_low %}<small class="open-low-text">Opened package getting low</small>{% elif item.group_name %}<small>Grouped under {{ item.group_name }}</small>{% else %}<small>{{ item.category_label }}</small>{% endif %}</div></div>
       <div class="inventory-quantity"><strong>{{ item.unopened_quantity|int if item.unopened_quantity == item.unopened_quantity|int else item.unopened_quantity }}</strong><span>unopened</span>{% if item.opened_quantity %}<b>{{ item.opened_quantity|int if item.opened_quantity == item.opened_quantity|int else item.opened_quantity }} open</b>{% endif %}</div>
       <div class="inventory-locations">{% if item.stocks %}{% for stock in item.stocks %}<span>{{ stock.name }}: {{ stock.unopened|int if stock.unopened == stock.unopened|int else stock.unopened }}{% if stock.opened %} + {{ stock.opened|int if stock.opened == stock.opened|int else stock.opened }} open{% endif %}</span>{% endfor %}{% else %}<span>No stock</span>{% endif %}</div>
       <div class="inventory-expiry"><span>{{ item.expires_on or 'Not set' }}</span>{% if item.state != 'good' %}<b>{{ item.state|title }}</b>{% endif %}</div>
