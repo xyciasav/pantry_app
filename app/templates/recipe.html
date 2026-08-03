@@ -1,10 +1,12 @@
 {% extends "base.html" %}
 {% block title %}{{ meal_name }} · Shelf Life{% endblock %}
 {% block content %}
-<section class="recipe-shell"><a class="back" href="/dinner">← Back to dinner picks</a>
+<section class="recipe-shell"><div class="recipe-top"><a class="back" href="{{ '/recipes' if recipe_id else '/dinner' }}">← Back to {{ 'saved recipes' if recipe_id else 'dinner picks' }}</a>{% if recipe and job_id %}<form method="post" action="/recipes/save"><input type="hidden" name="job_id" value="{{ job_id }}"><button class="save-button" type="submit">📌 Save recipe</button></form>{% endif %}</div>
+  {% if saved %}<div class="success-note">Recipe saved. You can return to it anytime from Saved Recipes.</div>{% endif %}
   {% if error %}<div class="dinner-error recipe-error"><strong>Could not make the recipe</strong><span>{{ error }}</span><a class="secondary-button" href="/dinner">Try another dinner</a></div>{% elif recipe %}
-  <div class="recipe-heading"><p class="eyebrow">TONIGHT'S RECIPE</p><h1>{{ recipe.name }}</h1><p>{{ recipe.summary }}</p><div><span>{{ recipe.time_minutes }} minutes</span><span>{{ recipe.servings }} servings</span></div></div>
+  <div class="recipe-heading"><p class="eyebrow">{{ 'SAVED RECIPE' if recipe_id else "TONIGHT'S RECIPE" }}</p><h1>{{ recipe.name }}</h1><p>{{ recipe.summary }}</p><div><span>{{ recipe.time_minutes }} minutes</span><span>{{ recipe.servings }} servings</span></div></div>
   <div class="meal-columns recipe-columns"><section class="detail-panel"><h2>Ingredients</h2><ul>{% for ingredient in recipe.ingredients %}<li class="{{ 'have' if ingredient.have else 'missing' }}"><span>{{ ingredient.item }}</span><b>{{ ingredient.amount }}</b></li>{% endfor %}</ul>{% if recipe.missing_items %}<p class="missing-note"><strong>Still needed:</strong> {{ recipe.missing_items|join(', ') }}</p>{% endif %}</section><section class="detail-panel"><h2>How to make it</h2><ol>{% for step in recipe.steps %}<li>{{ step }}</li>{% endfor %}</ol></section></div>
+  {% if recipe_id %}<form class="recipe-delete" method="post" action="/recipes/{{ recipe_id }}/delete" onsubmit="return confirm('Remove this saved recipe?')"><button type="submit">Remove saved recipe</button></form>{% endif %}
   {% endif %}
 </section>
 {% endblock %}

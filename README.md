@@ -45,11 +45,11 @@ Changing the password or signing key immediately invalidates existing sessions. 
 
 ### Version and image name
 
-The default Docker image is named `shelf-life:1.9.6`, and the same version appears in the website header, footer, and `/health` response.
+The default Docker image is named `shelf-life:1.10.0`, and the same version appears in the website header, footer, and `/health` response.
 
 Portainer stack variables can override these values:
 
-- `PANTRY_VERSION=1.9.6` controls the Docker tag and displayed website version.
+- `PANTRY_VERSION=1.10.0` controls the Docker tag and displayed website version.
 - `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
 
 For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.
@@ -69,6 +69,7 @@ For each release, change `PANTRY_VERSION` to the new version before rebuilding t
 - Read-only inventory API for local LLM integrations using `PANTRY_API_KEY`
 - Renameable product groups and an attention-first, color-coded inventory list
 - A private What's for Dinner assistant that uses current inventory, expiry dates, and a saved household taste profile
+- A persistent, mobile-friendly Saved Recipes cookbook included in normal Shelf Life backups
 
 ## Dinner Assistant
 
@@ -81,6 +82,8 @@ PANTRY_LLM_API_KEY=YOUR_PROXY_KEY
 ```
 
 Leave `PANTRY_LLM_API_KEY` blank if the proxy does not require authentication. The API key stays in the container environment and is never shown or saved in the pantry database. The Dinner page sends in-stock item names, amounts, ingredient labels, and expiry dates to the configured proxy. Your proxy's existing assistant prompt supplies the household profile. Shelf Life first requests up to three meal names; it requests the full recipe only after you select one. It does not change inventory automatically.
+
+Generated recipes can be pinned into Shelf Life's Saved Recipes cookbook. The saved record includes reserved source and Outline ID fields so a later Outline publishing integration can be added without changing the recipe format; version 1.10.0 does not contact or publish to Outline.
 
 ## Local LLM inventory API
 

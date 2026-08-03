@@ -31,7 +31,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.9.6")
+APP_VERSION = os.getenv("APP_VERSION", "1.10.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -257,6 +257,18 @@ def init_db() -> None:
             )"""
         )
         conn.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS saved_recipes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                recipe_json TEXT NOT NULL,
+                pinned INTEGER NOT NULL DEFAULT 1,
+                source TEXT NOT NULL DEFAULT 'shelf-life',
+                outline_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+        )
         conn.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('shopping_mode', 'analysis')")
         conn.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('analysis_days', '7')")
         conn.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('analysis_started_at', ?)", (datetime.now().isoformat(timespec="seconds"),))
@@ -1339,7 +1351,53 @@ def dinner_job_result(request: Request, job_id: str):
         with closing(db()) as conn:
             inventory_count = len(dinner_inventory(conn))
         return render(request, "dinner.html", inventory_count=inventory_count, meals=job["result"] or [], error=job["error"], llm_enabled=bool(LLM_URL and LLM_MODEL))
-    return render(request, "recipe.html", recipe=job["result"], meal_name=job["meal_name"], error=job["error"])
+    return render(request, "recipe.html", recipe=job["result"], meal_name=job["meal_name"], error=job["error"], job_id=job_id, saved=False, recipe_id=None)
+
+
+@app.post("/recipes/save")
+def save_recipe(job_id: str = Form(...)):
+    job = get_dinner_job(job_id)
+    if not job or job["kind"] != "recipe" or job["status"] != "complete" or not isinstance(job["result"], dict):
+        raise HTTPException(400, "This generated recipe is no longer available. Generate it again, then save it.")
+    recipe = job["result"]
+    name = str(recipe.get("name") or job["meal_name"]).strip()[:200]
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(db()) as conn:
+        cursor = conn.execute(
+            "INSERT INTO saved_recipes (name, recipe_json, pinned, source, created_at, updated_at) VALUES (?, ?, 1, 'shelf-life', ?, ?)",
+            (name, json.dumps(recipe, ensure_ascii=False), now, now),
+        )
+        recipe_id = cursor.lastrowid
+        conn.commit()
+    return RedirectResponse(f"/recipes/{recipe_id}?saved=1", status_code=303)
+
+
+@app.get("/recipes", response_class=HTMLResponse)
+def saved_recipes_page(request: Request):
+    with closing(db()) as conn:
+        rows = [dict(row) for row in conn.execute("SELECT id, name, pinned, created_at FROM saved_recipes ORDER BY pinned DESC, updated_at DESC")]
+    return render(request, "recipes.html", saved_recipes=rows)
+
+
+@app.get("/recipes/{recipe_id}", response_class=HTMLResponse)
+def saved_recipe_detail(request: Request, recipe_id: int, saved: str = ""):
+    with closing(db()) as conn:
+        row = conn.execute("SELECT * FROM saved_recipes WHERE id=?", (recipe_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Saved recipe not found")
+    try:
+        recipe = json.loads(row["recipe_json"])
+    except json.JSONDecodeError as exc:
+        raise HTTPException(500, "This saved recipe could not be read") from exc
+    return render(request, "recipe.html", recipe=recipe, meal_name=row["name"], error="", job_id=None, saved=bool(saved), recipe_id=recipe_id)
+
+
+@app.post("/recipes/{recipe_id}/delete")
+def delete_saved_recipe(recipe_id: int):
+    with closing(db()) as conn:
+        conn.execute("DELETE FROM saved_recipes WHERE id=?", (recipe_id,))
+        conn.commit()
+    return RedirectResponse("/recipes", status_code=303)
 
 
 @app.get("/shopping", response_class=HTMLResponse)
