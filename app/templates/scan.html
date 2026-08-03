@@ -49,7 +49,7 @@ function showInventoryMatch(product) {
   document.getElementById('quickOpen').textContent = Number(product.opened || 0) + ' open · ' + (product.unit || 'item');
   document.getElementById('quickImage').src = product.image_url || '/static/items/canned-food.webp';
   document.getElementById('quickForm').action = '/items/' + product.item_id + '/quantity';
-  document.getElementById('quickEdit').href = '/items/' + product.item_id + '/edit';
+  document.getElementById('quickEdit').href = '/items/' + product.item_id + '/edit?return_to=' + encodeURIComponent('/scan');
   quickDialog.showModal();
 }
 

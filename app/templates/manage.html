@@ -9,9 +9,9 @@
   <section class="manage-card"><div><h2>Storage locations</h2><p>Add or remove fridges, freezers, and pantry spaces.</p></div><a class="secondary-button" href="/locations">Manage locations</a></section>
 
   <section class="manage-card manage-stack">
-    <div><h2>Categories</h2><p>Add categories that appear in item forms and filters.</p></div>
+    <div><h2>Categories</h2><p>Add categories or edit their displayed name and icon. Existing items stay connected.</p></div>
     <form class="category-form" method="post" action="/categories"><label class="field"><span>Icon</span><input name="icon" value="•" maxlength="8"></label><label class="field"><span>Category name</span><input name="label" placeholder="Canned goods" required></label><button class="save-button">Add category</button></form>
-    <div class="category-list">{% for category in managed_categories %}<article><span>{{ category.icon }}</span><strong>{{ category.label }}</strong><small>{{ category.item_count }} items</small>{% if category.custom %}<form method="post" action="/categories/{{ category.key }}/delete"><button {% if category.item_count %}disabled title="Move items first"{% endif %}>Remove</button></form>{% endif %}</article>{% endfor %}</div>
+    <div class="category-list">{% for category in managed_categories %}<article><form class="category-edit-form" method="post" action="/categories/{{ category.key }}"><label><span>Icon</span><input name="icon" value="{{ category.icon }}" maxlength="8" aria-label="{{ category.label }} icon"></label><label><span>Name</span><input name="label" value="{{ category.label }}" required aria-label="{{ category.label }} name"></label><small>{{ category.item_count }} items</small><button class="category-save" type="submit">Save</button></form>{% if category.custom %}<form class="category-delete-form" method="post" action="/categories/{{ category.key }}/delete"><button {% if category.item_count %}disabled title="Move items first"{% endif %}>Remove</button></form>{% endif %}</article>{% endfor %}</div>
   </section>
 
   <section class="manage-card manage-stack">

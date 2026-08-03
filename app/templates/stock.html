@@ -2,9 +2,9 @@
 {% block title %}{{ item.name }} stock · Shelf Life{% endblock %}
 {% block content %}
 <section class="form-shell stock-shell">
-  <a class="back" href="/">← Back to kitchen</a>
+  <a class="back" href="{{ return_to }}">← Back to kitchen</a>
   <div class="form-heading"><p class="eyebrow">STOCK BY LOCATION</p><h1>{{ item.name }}</h1><p>Count unopened and open packages separately. We’ll add them for the overall total.</p></div>
-  <form method="post" action="/items/{{ item.id }}/stock">
+  <form method="post" action="/items/{{ item.id }}/stock"><input type="hidden" name="return_to" value="{{ return_to }}">
   <div class="stock-list">
     {% for stock in stocks %}
     <div class="stock-location-form">

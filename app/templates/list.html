@@ -12,7 +12,7 @@
       <div class="inventory-quantity"><strong>{{ item.unopened_quantity|int if item.unopened_quantity == item.unopened_quantity|int else item.unopened_quantity }}</strong><span>unopened</span>{% if item.opened_quantity %}<b>{{ item.opened_quantity|int if item.opened_quantity == item.opened_quantity|int else item.opened_quantity }} open</b>{% endif %}</div>
       <div class="inventory-locations">{% if item.stocks %}{% for stock in item.stocks %}<span>{{ stock.name }}: {{ stock.unopened|int if stock.unopened == stock.unopened|int else stock.unopened }}{% if stock.opened %} + {{ stock.opened|int if stock.opened == stock.opened|int else stock.opened }} open{% endif %}</span>{% endfor %}{% else %}<span>No stock</span>{% endif %}</div>
       <div class="inventory-expiry"><span>{{ item.expires_on or 'Not set' }}</span>{% if item.state != 'good' %}<b>{{ item.state|title }}</b>{% endif %}</div>
-      <a class="secondary-button" href="/items/{{ item.id }}/edit">Edit</a>
+      <a class="secondary-button" href="/items/{{ item.id }}/edit?return_to={{ return_to|urlencode }}">Edit</a>
     </article>
     {% else %}<section class="empty"><h2>No matching items</h2><p>Try another search.</p></section>{% endfor %}
   </div>

@@ -2,10 +2,10 @@
 {% block title %}{{ 'Add' if is_new else 'Edit' }} item · Shelf Life{% endblock %}
 {% block content %}
 <section class="form-shell">
-  <a class="back" href="/">← Back to kitchen</a>
+  <a class="back" href="{{ return_to if not is_new else '/' }}">← Back to kitchen</a>
   <div class="form-heading"><p class="eyebrow">{{ 'STOCK THE SHELF' if is_new else 'UPDATE YOUR STOCK' }}</p><h1>{{ 'Add something new' if is_new else 'Edit item' }}</h1><p>Keep it quick—only the name is required.</p></div>
   <form class="item-form" method="post" action="/items/save" enctype="multipart/form-data">
-    {% if not is_new %}<input type="hidden" name="item_id" value="{{ item.id }}">{% endif %}
+    {% if not is_new %}<input type="hidden" name="item_id" value="{{ item.id }}"><input type="hidden" name="return_to" value="{{ return_to }}">{% endif %}
     <input type="hidden" name="barcode" value="{{ item.barcode if item and item.barcode else '' }}">
     <input type="hidden" name="image_url" value="{{ item.image_url if item and item.image_url else '' }}">
     {% if item and item.image_url %}<div class="product-preview wide"><img src="{{ item.image_url }}" alt=""><span>Current item photo{% if item.barcode %}<br><small>{{ item.barcode }}</small>{% endif %}</span></div>{% endif %}
@@ -18,15 +18,15 @@
     <label class="field"><span>Unopened</span><input type="number" min="0" step="0.25" name="unopened" value="1"><small>Sealed packages or containers.</small></label>
     <label class="field"><span>Open</span><input type="number" min="0" step="0.25" name="opened" value="0"><small>Packages currently opened.</small></label>
     {% else %}
-    <div class="stock-callout wide"><div><strong>Stock by location</strong><span>Set unopened and open quantities for each place.</span></div><a class="secondary-button" href="/items/{{ item.id }}/stock">Manage stock</a></div>
+    <div class="stock-callout wide"><div><strong>Stock by location</strong><span>Set unopened and open quantities for each place.</span></div><a class="secondary-button" href="/items/{{ item.id }}/stock?return_to={{ return_to|urlencode }}">Manage stock</a></div>
     {% endif %}
     <label class="field"><span>Unit</span><input name="unit" value="{{ item.unit if item else 'item' }}" placeholder="item, can, lb…"></label>
     <label class="field"><span>Bought on</span><input type="date" name="bought_on" value="{{ item.bought_on if item and item.bought_on else today }}"></label>
     <label class="field"><span>Expires on</span><input type="date" name="expires_on" value="{{ item.expires_on if item and item.expires_on else '' }}"></label>
     <label class="field wide"><span>Tell me when unopened reaches</span><input type="number" min="0" step="0.25" name="low_at" value="{{ item.low_at if item else 1 }}"><small>This creates a running-low alert based on sealed stock.</small></label>
     <label class="field wide"><span>Notes <em>optional</em></span><textarea name="notes" rows="3" placeholder="Brand, size, meal plans…">{{ item.notes if item else '' }}</textarea></label>
-    <div class="form-actions wide"><button class="save-button" type="submit">{{ 'Add to kitchen' if is_new else 'Save changes' }}</button>{% if not is_new %}<a href="/items/{{ item.id }}/group">Group similar items</a>{% endif %}<a href="/">Cancel</a></div>
+    <div class="form-actions wide"><button class="save-button" type="submit">{{ 'Add to kitchen' if is_new else 'Save changes' }}</button>{% if not is_new %}<a href="/items/{{ item.id }}/group">Group similar items</a>{% endif %}<a href="{{ return_to if not is_new else '/' }}">Cancel</a></div>
   </form>
-  {% if not is_new %}<form class="delete-form" method="post" action="/items/{{ item.id }}/delete" onsubmit="return confirm('Remove {{ item.name }}?')"><button>Remove this item</button></form>{% endif %}
+  {% if not is_new %}<form class="delete-form" method="post" action="/items/{{ item.id }}/delete" onsubmit="return confirm('Remove {{ item.name }}?')"><input type="hidden" name="return_to" value="{{ return_to }}"><button>Remove this item</button></form>{% endif %}
 </section>
 {% endblock %}

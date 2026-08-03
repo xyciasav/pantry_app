@@ -30,7 +30,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.6.5")
+APP_VERSION = os.getenv("APP_VERSION", "1.6.6")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -288,6 +288,10 @@ def normalize_date(value: str | None) -> str | None:
         raise HTTPException(400, "Invalid date") from exc
 
 
+def safe_return_path(value: str | None, fallback: str = "/") -> str:
+    return value if value and value.startswith("/") and not value.startswith("//") else fallback
+
+
 def item_art_url(name: str, category: str) -> str | None:
     words = set(re.findall(r"[a-z]+", name.lower()))
     normalized = " ".join(re.findall(r"[a-z]+", name.lower()))
@@ -458,7 +462,7 @@ def home(request: Request, location: str = "all", category: str = "all", q: str 
         "expiring": sum(i["state"] in {"expired", "expiring"} for i in items),
         "low": sum(i["state"] in {"out", "low"} for i in items),
     }
-    return render(request, "index.html", items=items, category_sections=category_sections, counts=counts, filters={"location": location, "category": category, "q": q})
+    return render(request, "index.html", items=items, category_sections=category_sections, counts=counts, filters={"location": location, "category": category, "q": q}, return_to=str(request.url.path) + (f"?{request.url.query}" if request.url.query else ""))
 
 
 @app.get("/items/new", response_class=HTMLResponse)
@@ -468,12 +472,12 @@ def new_item(request: Request, name: str = "", barcode: str = "", image_url: str
 
 
 @app.get("/items/{item_id}/edit", response_class=HTMLResponse)
-def edit_item(request: Request, item_id: int):
+def edit_item(request: Request, item_id: int, return_to: str = "/"):
     with closing(db()) as conn:
         row = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
     if not row:
         raise HTTPException(404)
-    return render(request, "form.html", item=dict(row), is_new=False, today=date.today().isoformat())
+    return render(request, "form.html", item=dict(row), is_new=False, today=date.today().isoformat(), return_to=safe_return_path(return_to))
 
 
 @app.post("/items/save")
@@ -494,6 +498,7 @@ async def save_item(
     image_url: str = Form(""),
     generic_image: str = Form(""),
     photo: UploadFile | None = File(None),
+    return_to: str = Form("/"),
 ):
     starting_unopened = unopened if unopened is not None else quantity
     if not name.strip() or low_at < 0 or (starting_unopened is not None and starting_unopened < 0) or opened < 0:
@@ -535,7 +540,7 @@ async def save_item(
             )
             conn.execute("INSERT INTO item_stocks (item_id, location_id, quantity, opened, updated_at) VALUES (?, ?, ?, ?, ?)", (cursor.lastrowid, location_id, total_quantity, opened, now))
         conn.commit()
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse(safe_return_path(return_to), status_code=303)
 
 
 @app.post("/items/{item_id}/quantity")
@@ -572,7 +577,7 @@ def change_quantity(item_id: int, delta: float = Form(...), return_to: str = For
 
 
 @app.get("/items/{item_id}/stock", response_class=HTMLResponse)
-def item_stock_page(request: Request, item_id: int):
+def item_stock_page(request: Request, item_id: int, return_to: str = "/"):
     with closing(db()) as conn:
         item = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
         if not item:
@@ -588,7 +593,7 @@ def item_stock_page(request: Request, item_id: int):
                 (item_id,),
             )
         ]
-    return render(request, "stock.html", item=dict(item), stocks=stocks)
+    return render(request, "stock.html", item=dict(item), stocks=stocks, return_to=safe_return_path(return_to))
 
 
 @app.get("/items/{item_id}/group", response_class=HTMLResponse)
@@ -726,12 +731,13 @@ def inventory_list(request: Request, q: str = "", status: str = "all"):
     elif status != "all":
         raise HTTPException(400, "Invalid inventory status filter")
     items.sort(key=lambda item: (state_order[item["state"]], item["unopened_quantity"], item["expires_on"] is None, item["expires_on"] or "", item["name"].lower()))
-    return render(request, "list.html", items=items, q=q, status=status)
+    return render(request, "list.html", items=items, q=q, status=status, return_to=str(request.url.path) + (f"?{request.url.query}" if request.url.query else ""))
 
 
 @app.post("/items/{item_id}/stock")
 async def update_item_stock(item_id: int, request: Request):
     form = await request.form()
+    return_to = safe_return_path(str(form.get("return_to", "/")))
     now = datetime.now().isoformat(timespec="seconds")
     with closing(db()) as conn:
         if not conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
@@ -754,16 +760,16 @@ async def update_item_stock(item_id: int, request: Request):
         total = conn.execute("SELECT COALESCE(SUM(quantity), 0) FROM item_stocks WHERE item_id = ?", (item_id,)).fetchone()[0]
         conn.execute("UPDATE items SET quantity=?, updated_at=? WHERE id=?", (total, now, item_id))
         conn.commit()
-    return RedirectResponse(f"/items/{item_id}/stock", status_code=303)
+    return RedirectResponse(return_to, status_code=303)
 
 
 @app.post("/items/{item_id}/delete")
-def delete_item(item_id: int):
+def delete_item(item_id: int, return_to: str = Form("/")):
     with closing(db()) as conn:
         conn.execute("DELETE FROM item_stocks WHERE item_id = ?", (item_id,))
         conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
         conn.commit()
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse(safe_return_path(return_to), status_code=303)
 
 
 @app.get("/locations", response_class=HTMLResponse)
@@ -847,6 +853,24 @@ def delete_category(key: str):
         conn.execute("DELETE FROM categories WHERE key=?", (key,))
         conn.commit()
         CATEGORIES.pop(key, None)
+    return RedirectResponse("/manage", status_code=303)
+
+
+@app.post("/categories/{key}")
+def edit_category(key: str, label: str = Form(...), icon: str = Form("•")):
+    clean_label = label.strip()
+    clean_icon = icon.strip() or "•"
+    if not clean_label:
+        raise HTTPException(400, "Enter a category name")
+    try:
+        with closing(db()) as conn:
+            cursor = conn.execute("UPDATE categories SET label=?, icon=? WHERE key=?", (clean_label, clean_icon, key))
+            if not cursor.rowcount:
+                raise HTTPException(404, "Category not found")
+            conn.commit()
+            CATEGORIES[key] = (clean_label, clean_icon)
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, "That category name already exists") from exc
     return RedirectResponse("/manage", status_code=303)
 
 
