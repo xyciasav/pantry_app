@@ -31,7 +31,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.9.5")
+APP_VERSION = os.getenv("APP_VERSION", "1.9.6")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -404,6 +404,20 @@ def dinner_inventory(conn: sqlite3.Connection) -> list[dict]:
     return [{"name": row["name"], "category": row["category"], "unit": row["unit"], "total": row["total_quantity"], "open": row["opened_quantity"], "nearest_expiry": row["nearest_expiry"], "ingredients": row["ingredients"] or ""} for row in rows]
 
 
+def extract_meals_from_prose(content: str) -> dict | None:
+    headings = list(re.finditer(r"(?im)^(?:Dinner\s+(?:Idea|Option)|Meal)\s*#?\d+\s*:\s*(.+?)\s*$", content))
+    meals = []
+    for index, heading in enumerate(headings[:3]):
+        name = heading.group(1).strip().strip("*#- ")
+        segment_end = headings[index + 1].start() if index + 1 < len(headings) else len(content)
+        segment = content[heading.end():segment_end]
+        summary_match = re.search(r"(?im)^\s*(?:-\s*)?Summary\s*:\s*(.+?)\s*$", segment)
+        summary = summary_match.group(1).strip() if summary_match else "Selected from your current inventory."
+        if name and name not in {"...", "[name]"}:
+            meals.append({"name": name[:160], "summary": summary[:300]})
+    return {"meals": meals} if meals else None
+
+
 def parse_llm_json(content: str) -> dict:
     cleaned = content.strip()
     if cleaned.startswith("```"):
@@ -418,7 +432,10 @@ def parse_llm_json(content: str) -> dict:
                 candidates.append(value)
         except json.JSONDecodeError:
             continue
+    prose_meals = extract_meals_from_prose(cleaned)
     if not candidates:
+        if prose_meals:
+            return prose_meals
         raise ValueError("the model did not return valid JSON")
     meal_candidates = [candidate for candidate in candidates if isinstance(candidate.get("meals"), list)]
     for candidate in reversed(meal_candidates):
@@ -426,10 +443,17 @@ def parse_llm_json(content: str) -> dict:
         if names and any(name not in {"", "..."} for name in names):
             return candidate
     if meal_candidates:
+        if prose_meals:
+            return prose_meals
         raise ValueError("the model returned only template placeholders")
     for candidate in reversed(candidates):
         if isinstance(candidate.get("steps"), list) and isinstance(candidate.get("ingredients"), list):
             return candidate
+    if prose_meals:
+        return prose_meals
+    partial_meals = [candidate for candidate in candidates if str(candidate.get("name", "")).strip() not in {"", "..."} and "summary" in candidate]
+    if partial_meals:
+        return {"meals": partial_meals[-3:]}
     return candidates[-1]
 
 
