@@ -11,6 +11,7 @@ import hmac
 import io
 import secrets
 import shutil
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -30,7 +31,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.9.4")
+APP_VERSION = os.getenv("APP_VERSION", "1.9.5")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -43,6 +44,8 @@ SESSION_SECONDS = int(float(os.getenv("PANTRY_SESSION_HOURS", "12")) * 3600)
 COOKIE_NAME = "pantry_session"
 LEGACY_COOKIE_NAME = "__Host-pantry_session"
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+DINNER_JOBS: dict[str, dict] = {}
+DINNER_JOBS_LOCK = threading.Lock()
 UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -519,6 +522,34 @@ def ask_dinner_recipe(inventory: list[dict], meal_name: str) -> dict:
     result["name"] = str(result.get("name") or meal_name)
     result["missing_items"] = result.get("missing_items") if isinstance(result.get("missing_items"), list) else []
     return result
+
+
+def start_dinner_job(kind: str, inventory: list[dict], meal_name: str = "") -> str:
+    now = time.time()
+    job_id = secrets.token_urlsafe(18)
+    with DINNER_JOBS_LOCK:
+        for key in [key for key, job in DINNER_JOBS.items() if now - job["created_at"] > 3600]:
+            DINNER_JOBS.pop(key, None)
+        DINNER_JOBS[job_id] = {"kind": kind, "status": "working", "created_at": now, "meal_name": meal_name, "result": None, "error": ""}
+
+    def run_job() -> None:
+        try:
+            result = ask_dinner_picks(inventory) if kind == "picks" else ask_dinner_recipe(inventory, meal_name)
+            error = ""
+        except Exception as exc:
+            result, error = None, str(exc) or "The dinner assistant could not complete this request."
+        with DINNER_JOBS_LOCK:
+            if job_id in DINNER_JOBS:
+                DINNER_JOBS[job_id].update(status="complete" if result is not None else "error", result=result, error=error)
+
+    threading.Thread(target=run_job, name=f"dinner-{kind}-{job_id[:6]}", daemon=True).start()
+    return job_id
+
+
+def get_dinner_job(job_id: str) -> dict | None:
+    with DINNER_JOBS_LOCK:
+        job = DINNER_JOBS.get(job_id)
+        return dict(job) if job else None
 
 
 def record_inventory_event(conn: sqlite3.Connection, item_id: int, delta: float, event_type: str) -> None:
@@ -1245,33 +1276,46 @@ def dinner_generate_get():
     return RedirectResponse("/dinner", status_code=303)
 
 
-@app.post("/dinner/generate", response_class=HTMLResponse)
-def generate_dinner(request: Request):
+@app.post("/dinner/generate")
+def generate_dinner():
     with closing(db()) as conn:
         inventory = dinner_inventory(conn)
     if not inventory:
-        return render(request, "dinner.html", inventory_count=0, meals=[], error="Add some in-stock items before asking for dinner ideas.", llm_enabled=bool(LLM_URL and LLM_MODEL))
-    try:
-        meals = ask_dinner_picks(inventory)
-        error = ""
-    except RuntimeError as exc:
-        meals, error = [], str(exc)
-    return render(request, "dinner.html", inventory_count=len(inventory), meals=meals, error=error, llm_enabled=bool(LLM_URL and LLM_MODEL))
+        return JSONResponse({"detail": "Add some in-stock items before asking for dinner ideas."}, status_code=400)
+    job_id = start_dinner_job("picks", inventory)
+    return {"job_id": job_id, "status_url": f"/dinner/jobs/{job_id}"}
 
 
-@app.post("/dinner/recipe", response_class=HTMLResponse)
-def generate_recipe(request: Request, meal_name: str = Form(...)):
+@app.post("/dinner/recipe")
+def generate_recipe(meal_name: str = Form(...)):
     meal_name = meal_name.strip()[:160]
     if not meal_name:
-        return RedirectResponse("/dinner", status_code=303)
+        return JSONResponse({"detail": "Choose a dinner first."}, status_code=400)
     with closing(db()) as conn:
         inventory = dinner_inventory(conn)
-    try:
-        recipe = ask_dinner_recipe(inventory, meal_name)
-        error = ""
-    except RuntimeError as exc:
-        recipe, error = None, str(exc)
-    return render(request, "recipe.html", recipe=recipe, meal_name=meal_name, error=error)
+    job_id = start_dinner_job("recipe", inventory, meal_name)
+    return {"job_id": job_id, "status_url": f"/dinner/jobs/{job_id}"}
+
+
+@app.get("/dinner/jobs/{job_id}")
+def dinner_job_status(job_id: str):
+    job = get_dinner_job(job_id)
+    if not job:
+        raise HTTPException(404, "This dinner request expired. Please start again.")
+    result_url = f"/dinner/jobs/{job_id}/result" if job["status"] in {"complete", "error"} else None
+    return {"status": job["status"], "result_url": result_url}
+
+
+@app.get("/dinner/jobs/{job_id}/result", response_class=HTMLResponse)
+def dinner_job_result(request: Request, job_id: str):
+    job = get_dinner_job(job_id)
+    if not job or job["status"] == "working":
+        return RedirectResponse("/dinner", status_code=303)
+    if job["kind"] == "picks":
+        with closing(db()) as conn:
+            inventory_count = len(dinner_inventory(conn))
+        return render(request, "dinner.html", inventory_count=inventory_count, meals=job["result"] or [], error=job["error"], llm_enabled=bool(LLM_URL and LLM_MODEL))
+    return render(request, "recipe.html", recipe=job["result"], meal_name=job["meal_name"], error=job["error"])
 
 
 @app.get("/shopping", response_class=HTMLResponse)

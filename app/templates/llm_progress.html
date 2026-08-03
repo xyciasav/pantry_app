@@ -1,12 +1,34 @@
-<div id="llmProgress" class="llm-progress" hidden aria-live="assertive" aria-busy="true"><div class="llm-progress-card"><span class="llm-progress-icon">🍳</span><h2 id="llmProgressTitle">Asking your pantry assistant…</h2><p>This can take a little while. Please keep this page open.</p><div class="llm-progress-track"><i></i></div><small>Looking through your inventory</small></div></div>
+<div id="llmProgress" class="llm-progress" hidden aria-live="assertive" aria-busy="true"><div class="llm-progress-card"><span class="llm-progress-icon">🍳</span><h2 id="llmProgressTitle">Asking your pantry assistant…</h2><p>This can take a little while. You can safely wait on this page.</p><div class="llm-progress-track"><i></i></div><small>Starting the request</small></div></div>
 <script>
-document.querySelectorAll('.llm-form').forEach(form => form.addEventListener('submit', event => {
-  if (form.dataset.submitting === 'yes') { event.preventDefault(); return; }
+document.querySelectorAll('.llm-form').forEach(form => form.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (form.dataset.submitting === 'yes') return;
   form.dataset.submitting = 'yes';
   form.querySelectorAll('button').forEach(button => button.disabled = true);
   const overlay = document.getElementById('llmProgress');
   const recipeRequest = form.action.endsWith('/dinner/recipe');
   document.getElementById('llmProgressTitle').textContent = recipeRequest ? 'Writing your recipe…' : 'Finding dinner ideas…';
+  const statusText = overlay.querySelector('small');
   overlay.hidden = false;
+  try {
+    const started = await fetch(form.action, {method: 'POST', body: new FormData(form), headers: {'Accept': 'application/json'}});
+    const job = await started.json();
+    if (!started.ok) throw new Error(job.detail || 'Could not start the dinner assistant.');
+    let checks = 0;
+    while (true) {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      const response = await fetch(job.status_url, {headers: {'Accept': 'application/json'}, cache: 'no-store'});
+      if (!response.ok) throw new Error('The dinner request was interrupted. Please try again.');
+      const state = await response.json();
+      checks += 1;
+      statusText.textContent = checks > 20 ? 'Still working — this page is connected' : recipeRequest ? 'Building ingredients and steps' : 'Comparing meals with your inventory';
+      if (state.result_url) { window.location.assign(state.result_url); return; }
+    }
+  } catch (error) {
+    overlay.hidden = true;
+    form.dataset.submitting = 'no';
+    form.querySelectorAll('button').forEach(button => button.disabled = false);
+    window.alert(error.message || 'The dinner assistant could not start.');
+  }
 }));
 </script>
