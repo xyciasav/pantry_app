@@ -2,13 +2,12 @@
 {% block title %}What's for Dinner? · Shelf Life{% endblock %}
 {% block content %}
 <section class="dinner-shell">
-  <div class="dinner-heading"><div><p class="eyebrow">PANTRY ASSISTANT</p><h1>What's for Dinner?</h1><p>Get meal ideas based on what is actually in your kitchen and how your household likes to eat.</p></div><span class="api-status {{ 'enabled' if llm_enabled else '' }}">{{ 'LLM ready' if llm_enabled else 'Setup needed' }}</span></div>
-  {% if saved %}<div class="success-note">Dinner preferences saved.</div>{% endif %}
-  {% if error %}<div class="dinner-error"><strong>Could not make a dinner plan</strong><span>{{ error }}</span></div>{% endif %}
-  <section class="dinner-controls">
-    <form method="post" action="/dinner/preferences"><label class="field"><span>People eating</span><input type="number" name="household_size" min="1" max="20" value="{{ dinner_settings.household_size }}" required></label><label class="field wide"><span>Taste profile, dislikes, allergies, and goals</span><textarea name="taste_profile" rows="4" placeholder="We like savory food, mild-to-medium spice, quick weeknight dinners...">{{ dinner_settings.taste_profile }}</textarea></label><button class="secondary-button" type="submit">Save preferences</button></form>
-    <form method="post" action="/dinner/generate"><button class="dinner-generate" type="submit" {% if not llm_enabled %}disabled{% endif %}><span>🍽</span><strong>Surprise me with dinner</strong><small>Uses {{ inventory_count }} in-stock products</small></button></form>
-  </section>
-  {% if meals %}<section class="meal-results"><div class="shopping-section-title"><h2>Tonight's ideas</h2><span>{{ meals|length }}</span></div>{% for meal in meals %}<details class="meal-card" {% if loop.first %}open{% endif %}><summary><div><p class="eyebrow">IDEA {{ loop.index }}</p><h2>{{ meal.name }}</h2><p>{{ meal.summary }}</p></div><span>{{ meal.time_minutes }} min · {{ meal.servings }} servings</span></summary><div class="meal-body"><p class="meal-reason">{{ meal.why_this_fits }}</p><div class="meal-columns"><section><h3>Ingredients</h3><ul>{% for ingredient in meal.ingredients %}<li class="{{ 'have' if ingredient.have else 'missing' }}"><span>{{ ingredient.item }}</span><b>{{ ingredient.amount }}</b></li>{% endfor %}</ul>{% if meal.missing_items %}<p class="missing-note"><strong>Still needed:</strong> {{ meal.missing_items|join(', ') }}</p>{% endif %}</section><section><h3>How to make it</h3><ol>{% for step in meal.steps %}<li>{{ step }}</li>{% endfor %}</ol></section></div></div></details>{% endfor %}</section>{% endif %}
+  <div class="dinner-heading"><div><p class="eyebrow">PANTRY ASSISTANT</p><h1>What's for Dinner?</h1><p>Let your configured assistant choose up to three meals from what is in the kitchen.</p></div><span class="api-status {{ 'enabled' if llm_enabled else '' }}">{{ 'LLM ready' if llm_enabled else 'Setup needed' }}</span></div>
+  {% if error %}<div class="dinner-error"><strong>Could not get dinner ideas</strong><span>{{ error }}</span></div>{% endif %}
+  <form class="dinner-pick-form llm-form" method="post" action="/dinner/generate">
+    <button class="dinner-generate" type="submit" {% if not llm_enabled %}disabled{% endif %}><span>🍽</span><strong>Pick dinner</strong><small>Uses {{ inventory_count }} in-stock products</small></button>
+  </form>
+  {% if meals %}<section class="meal-results"><div class="shopping-section-title"><h2>Choose one</h2><span>{{ meals|length }}</span></div><div class="dinner-picks">{% for meal in meals %}<form class="meal-pick-card llm-form" method="post" action="/dinner/recipe"><input type="hidden" name="meal_name" value="{{ meal.name }}"><button type="submit"><span class="meal-number">{{ loop.index }}</span><strong>{{ meal.name }}</strong>{% if meal.summary %}<small>{{ meal.summary }}</small>{% endif %}<b>View recipe →</b></button></form>{% endfor %}</div></section>{% endif %}
 </section>
+{% include "llm_progress.html" %}
 {% endblock %}

@@ -1,0 +1,12 @@
+<div id="llmProgress" class="llm-progress" hidden aria-live="assertive" aria-busy="true"><div class="llm-progress-card"><span class="llm-progress-icon">🍳</span><h2 id="llmProgressTitle">Asking your pantry assistant…</h2><p>This can take a little while. Please keep this page open.</p><div class="llm-progress-track"><i></i></div><small>Looking through your inventory</small></div></div>
+<script>
+document.querySelectorAll('.llm-form').forEach(form => form.addEventListener('submit', event => {
+  if (form.dataset.submitting === 'yes') { event.preventDefault(); return; }
+  form.dataset.submitting = 'yes';
+  form.querySelectorAll('button').forEach(button => button.disabled = true);
+  const overlay = document.getElementById('llmProgress');
+  const recipeRequest = form.action.endsWith('/dinner/recipe');
+  document.getElementById('llmProgressTitle').textContent = recipeRequest ? 'Writing your recipe…' : 'Finding dinner ideas…';
+  overlay.hidden = false;
+}));
+</script>

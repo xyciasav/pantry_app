@@ -30,7 +30,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.9.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.9.1")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -389,11 +389,6 @@ def shopping_settings(conn: sqlite3.Connection) -> dict:
     return {"mode": values.get("shopping_mode", "analysis"), "days": int(values.get("analysis_days", "7")), "started_at": values.get("analysis_started_at", datetime.now().isoformat(timespec="seconds"))}
 
 
-def dinner_settings(conn: sqlite3.Connection) -> dict:
-    values = {row["key"]: row["value"] for row in conn.execute("SELECT key, value FROM app_settings")}
-    return {"taste_profile": values.get("dinner_taste_profile", ""), "household_size": max(1, int(values.get("dinner_household_size", "2")))}
-
-
 def dinner_inventory(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         """SELECT items.name, items.unit, items.category, items.ingredients,
@@ -415,28 +410,20 @@ def parse_llm_json(content: str) -> dict:
     if start < 0 or end < start:
         raise ValueError("the model did not return a meal plan")
     result = json.loads(cleaned[start:end + 1])
-    meals = result.get("meals")
-    if not isinstance(meals, list) or not meals:
-        raise ValueError("the model returned no meals")
-    return {"meals": meals[:3]}
+    return result
 
 
-def ask_dinner_llm(inventory: list[dict], settings: dict) -> dict:
+def call_dinner_llm(system: str, user_data: dict, temperature: float = 0.7) -> dict:
     if not LLM_URL or not LLM_MODEL:
         raise RuntimeError("Dinner Assistant is not configured. Set PANTRY_LLM_URL and PANTRY_LLM_MODEL in Portainer.")
-    system = ("You are Shelf Life's practical meal planner. Use the supplied inventory and taste profile. "
-              "Prefer opened and soon-expiring food. Never claim an unavailable ingredient is on hand. "
-              "Return JSON only with key meals, an array of exactly 3 objects. Each object needs name, summary, "
-              "why_this_fits, time_minutes, servings, ingredients (array of objects with item, amount, have), "
-              "steps (array of short strings), and missing_items (array of strings).")
-    user = json.dumps({"household_size": settings["household_size"], "taste_profile": settings["taste_profile"] or "No preferences saved; suggest familiar, broadly appealing meals.", "inventory": inventory}, ensure_ascii=False)
-    payload = json.dumps({"model": LLM_MODEL, "temperature": 0.8, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}).encode("utf-8")
+    user = json.dumps(user_data, ensure_ascii=False)
+    payload = json.dumps({"model": LLM_MODEL, "temperature": temperature, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}).encode("utf-8")
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if LLM_API_KEY:
         headers["Authorization"] = f"Bearer {LLM_API_KEY}"
     request = urllib.request.Request(f"{LLM_URL}/chat/completions", data=payload, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
+        with urllib.request.urlopen(request, timeout=90) as response:
             response_data = json.load(response)
         return parse_llm_json(response_data["choices"][0]["message"]["content"])
     except urllib.error.HTTPError as exc:
@@ -446,6 +433,39 @@ def ask_dinner_llm(inventory: list[dict], settings: dict) -> dict:
         raise RuntimeError(f"Shelf Life could not reach the LLM proxy: {exc}") from exc
     except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValueError) as exc:
         raise RuntimeError(f"The LLM response could not be read: {exc}") from exc
+
+
+def ask_dinner_picks(inventory: list[dict]) -> list[dict]:
+    result = call_dinner_llm(
+        "Use your configured household food profile and the supplied pantry inventory. Pick up to three distinct dinner ideas. "
+        "Prefer opened and soon-expiring food. Do not write recipes yet. Return JSON only as "
+        "{\"meals\":[{\"name\":\"...\",\"summary\":\"one short sentence\"}]}. Do not add other keys.",
+        {"inventory": inventory}, 0.9,
+    )
+    meals = result.get("meals")
+    if not isinstance(meals, list) or not meals:
+        raise RuntimeError("The LLM returned no dinner choices.")
+    picks = []
+    for meal in meals[:3]:
+        if isinstance(meal, dict) and str(meal.get("name", "")).strip():
+            picks.append({"name": str(meal["name"]).strip()[:160], "summary": str(meal.get("summary", "")).strip()[:300]})
+    if not picks:
+        raise RuntimeError("The LLM returned dinner choices in an unreadable format.")
+    return picks
+
+
+def ask_dinner_recipe(inventory: list[dict], meal_name: str) -> dict:
+    result = call_dinner_llm(
+        "Use your configured household food profile. Write a practical recipe for the selected meal using the supplied inventory. "
+        "Clearly distinguish pantry items from missing items. Return JSON only with name, summary, time_minutes, servings, "
+        "ingredients (array of objects with item, amount, have), steps (array of short strings), and missing_items (array of strings).",
+        {"selected_meal": meal_name, "inventory": inventory}, 0.45,
+    )
+    if not isinstance(result, dict) or not isinstance(result.get("steps"), list) or not isinstance(result.get("ingredients"), list):
+        raise RuntimeError("The LLM returned the recipe in an unreadable format.")
+    result["name"] = str(result.get("name") or meal_name)
+    result["missing_items"] = result.get("missing_items") if isinstance(result.get("missing_items"), list) else []
+    return result
 
 
 def record_inventory_event(conn: sqlite3.Connection, item_id: int, delta: float, event_type: str) -> None:
@@ -1161,37 +1181,44 @@ def manage_page(request: Request, restored: str = ""):
 
 
 @app.get("/dinner", response_class=HTMLResponse)
-def dinner_page(request: Request, saved: str = ""):
+def dinner_page(request: Request):
     with closing(db()) as conn:
-        settings = dinner_settings(conn)
         inventory_count = len(dinner_inventory(conn))
-    return render(request, "dinner.html", dinner_settings=settings, inventory_count=inventory_count, meals=[], error="", saved=saved, llm_enabled=bool(LLM_URL and LLM_MODEL))
+    return render(request, "dinner.html", inventory_count=inventory_count, meals=[], error="", llm_enabled=bool(LLM_URL and LLM_MODEL))
 
 
-@app.post("/dinner/preferences")
-def save_dinner_preferences(taste_profile: str = Form(""), household_size: int = Form(2)):
-    if household_size < 1 or household_size > 20:
-        raise HTTPException(400, "Household size must be between 1 and 20")
-    with closing(db()) as conn:
-        conn.execute("INSERT INTO app_settings (key,value) VALUES ('dinner_taste_profile',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (taste_profile.strip()[:4000],))
-        conn.execute("INSERT INTO app_settings (key,value) VALUES ('dinner_household_size',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(household_size),))
-        conn.commit()
-    return RedirectResponse("/dinner?saved=1", status_code=303)
+@app.get("/dinner/generate")
+def dinner_generate_get():
+    return RedirectResponse("/dinner", status_code=303)
 
 
 @app.post("/dinner/generate", response_class=HTMLResponse)
 def generate_dinner(request: Request):
     with closing(db()) as conn:
-        settings = dinner_settings(conn)
         inventory = dinner_inventory(conn)
     if not inventory:
-        return render(request, "dinner.html", dinner_settings=settings, inventory_count=0, meals=[], error="Add some in-stock items before asking for dinner ideas.", saved="", llm_enabled=bool(LLM_URL and LLM_MODEL))
+        return render(request, "dinner.html", inventory_count=0, meals=[], error="Add some in-stock items before asking for dinner ideas.", llm_enabled=bool(LLM_URL and LLM_MODEL))
     try:
-        plan = ask_dinner_llm(inventory, settings)
+        meals = ask_dinner_picks(inventory)
         error = ""
     except RuntimeError as exc:
-        plan, error = {"meals": []}, str(exc)
-    return render(request, "dinner.html", dinner_settings=settings, inventory_count=len(inventory), meals=plan["meals"], error=error, saved="", llm_enabled=bool(LLM_URL and LLM_MODEL))
+        meals, error = [], str(exc)
+    return render(request, "dinner.html", inventory_count=len(inventory), meals=meals, error=error, llm_enabled=bool(LLM_URL and LLM_MODEL))
+
+
+@app.post("/dinner/recipe", response_class=HTMLResponse)
+def generate_recipe(request: Request, meal_name: str = Form(...)):
+    meal_name = meal_name.strip()[:160]
+    if not meal_name:
+        return RedirectResponse("/dinner", status_code=303)
+    with closing(db()) as conn:
+        inventory = dinner_inventory(conn)
+    try:
+        recipe = ask_dinner_recipe(inventory, meal_name)
+        error = ""
+    except RuntimeError as exc:
+        recipe, error = None, str(exc)
+    return render(request, "recipe.html", recipe=recipe, meal_name=meal_name, error=error)
 
 
 @app.get("/shopping", response_class=HTMLResponse)

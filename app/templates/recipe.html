@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ meal_name }} · Shelf Life{% endblock %}
+{% block content %}
+<section class="recipe-shell"><a class="back" href="/dinner">← Back to dinner picks</a>
+  {% if error %}<div class="dinner-error recipe-error"><strong>Could not make the recipe</strong><span>{{ error }}</span><a class="secondary-button" href="/dinner">Try another dinner</a></div>{% elif recipe %}
+  <div class="recipe-heading"><p class="eyebrow">TONIGHT'S RECIPE</p><h1>{{ recipe.name }}</h1><p>{{ recipe.summary }}</p><div><span>{{ recipe.time_minutes }} minutes</span><span>{{ recipe.servings }} servings</span></div></div>
+  <div class="meal-columns recipe-columns"><section class="detail-panel"><h2>Ingredients</h2><ul>{% for ingredient in recipe.ingredients %}<li class="{{ 'have' if ingredient.have else 'missing' }}"><span>{{ ingredient.item }}</span><b>{{ ingredient.amount }}</b></li>{% endfor %}</ul>{% if recipe.missing_items %}<p class="missing-note"><strong>Still needed:</strong> {{ recipe.missing_items|join(', ') }}</p>{% endif %}</section><section class="detail-panel"><h2>How to make it</h2><ol>{% for step in recipe.steps %}<li>{{ step }}</li>{% endfor %}</ol></section></div>
+  {% endif %}
+</section>
+{% endblock %}

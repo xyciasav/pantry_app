@@ -20,6 +20,6 @@
   </section>
 
   <section class="manage-card"><div><h2>Local LLM API</h2><p>{% if api_enabled %}Enabled. Send <code>Authorization: Bearer YOUR_KEY</code> to <code>GET /api/inventory</code>.{% else %}Set <code>PANTRY_API_KEY</code> in Portainer to enable read-only inventory access at <code>GET /api/inventory</code>.{% endif %}</p></div><span class="api-status {{ 'enabled' if api_enabled else '' }}">{{ 'Enabled' if api_enabled else 'Not configured' }}</span></section>
-  <section class="manage-card"><div><h2>Dinner Assistant</h2><p>{% if llm_enabled %}Configured for <code>{{ llm_model }}</code>. Open Dinner to save your taste profile and generate meals from current inventory.{% else %}Set <code>PANTRY_LLM_URL</code>, <code>PANTRY_LLM_MODEL</code>, and optionally <code>PANTRY_LLM_API_KEY</code> in Portainer.{% endif %}</p></div><a class="secondary-button" href="/dinner">Open Dinner</a></section>
+  <section class="manage-card"><div><h2>Dinner Assistant</h2><p>{% if llm_enabled %}Configured for <code>{{ llm_model }}</code>. Shelf Life sends inventory to the taste profile already configured in your proxy.{% else %}Set <code>PANTRY_LLM_URL</code>, <code>PANTRY_LLM_MODEL</code>, and optionally <code>PANTRY_LLM_API_KEY</code> in Portainer.{% endif %}</p></div><a class="secondary-button" href="/dinner">Open Dinner</a></section>
 </section>
 {% endblock %}
