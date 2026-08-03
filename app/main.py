@@ -30,7 +30,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.9.2")
+APP_VERSION = os.getenv("APP_VERSION", "1.9.3")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -423,7 +423,7 @@ def parse_llm_json(content: str) -> dict:
         if names and any(name not in {"", "..."} for name in names):
             return candidate
     if meal_candidates:
-        return meal_candidates[-1]
+        raise ValueError("the model returned only template placeholders")
     for candidate in reversed(candidates):
         if isinstance(candidate.get("steps"), list) and isinstance(candidate.get("ingredients"), list):
             return candidate
@@ -450,6 +450,7 @@ def call_dinner_llm(system: str, user_data: dict, temperature: float = 0.7, max_
     payload = json.dumps({
         "model": LLM_MODEL, "temperature": temperature, "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
+        "chat_template_kwargs": {"enable_thinking": False},
         "messages": [{"role": "system", "content": system + " Do not reason aloud. /no_think"}, {"role": "user", "content": user}],
     }).encode("utf-8")
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -474,7 +475,7 @@ def ask_dinner_picks(inventory: list[dict]) -> list[dict]:
         "Use your configured household food profile and the supplied pantry inventory. Pick up to three distinct dinner ideas. "
         "Prefer opened and soon-expiring food. Do not write recipes yet. Return JSON only as "
         "{\"meals\":[{\"name\":\"...\",\"summary\":\"one short sentence\"}]}. Do not add other keys.",
-        {"inventory": compact_dinner_inventory(inventory)}, 0.8, 500,
+        {"inventory": compact_dinner_inventory(inventory)}, 0.7, 800,
     )
     meals = result.get("meals")
     if not isinstance(meals, list) or not meals:
@@ -493,7 +494,7 @@ def ask_dinner_recipe(inventory: list[dict], meal_name: str) -> dict:
         "Use your configured household food profile. Write a practical recipe for the selected meal using the supplied inventory. "
         "Clearly distinguish pantry items from missing items. Return JSON only with name, summary, time_minutes, servings, "
         "ingredients (array of objects with item, amount, have), steps (array of short strings), and missing_items (array of strings).",
-        {"selected_meal": meal_name, "inventory": compact_dinner_inventory(inventory)}, 0.4, 1400,
+        {"selected_meal": meal_name, "inventory": compact_dinner_inventory(inventory)}, 0.35, 2400,
     )
     if not isinstance(result, dict) or not isinstance(result.get("steps"), list) or not isinstance(result.get("ingredients"), list):
         raise RuntimeError("The LLM returned the recipe in an unreadable format.")
