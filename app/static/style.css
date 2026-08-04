@@ -65,3 +65,4 @@
 @media(max-width:800px){.recipe-unlocks>div:last-child{grid-template-columns:1fr}.recipe-unlocks article,.recipe-missing-banner{align-items:stretch;flex-direction:column}.recipe-unlocks .shopping-add,.recipe-missing-banner .shopping-add{width:100%}}
 .plan-heading-actions{display:flex;align-items:center;gap:9px}.plan-heading-actions form{margin:0}.meal-labels{display:flex;flex-wrap:wrap;gap:4px}.meal-labels span{border-radius:12px;background:#e8eed0;color:var(--green);padding:4px 7px;font-size:8px;font-weight:700}.recipe-editor label>small{color:var(--muted);font-size:10px;line-height:1.35}
 @media(max-width:800px){.plan-heading-actions{display:grid;width:100%}.plan-heading-actions .save-button,.plan-heading-actions .secondary-button{width:100%}}
+.item-card.return-highlight{animation:returnHighlight 1.4s ease-out}@keyframes returnHighlight{0%,35%{box-shadow:0 0 0 4px #748c4380,0 18px 45px rgba(31,59,50,.16)}100%{box-shadow:var(--shadow)}}

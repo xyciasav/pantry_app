@@ -38,6 +38,33 @@
   window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; installButton.hidden = false; });
   installButton.addEventListener('click', async () => { if (!installPrompt) return; await installPrompt.prompt(); installPrompt = null; installButton.hidden = true; });
   window.addEventListener('appinstalled', () => { installPrompt = null; installButton.hidden = true; });
+
+  // Keep the touch dashboard anchored when quantities change or an item edit returns.
+  const dashboardSections = Array.from(document.querySelectorAll('.category-section'));
+  if (dashboardSections.length) {
+    const stateKey = 'shelf-life-dashboard-state';
+    const pageKey = location.pathname + location.search;
+    let returningItemId = '';
+    const saveDashboardState = itemId => {
+      if (itemId) returningItemId = itemId;
+      try { sessionStorage.setItem(stateKey, JSON.stringify({page: pageKey, itemId: returningItemId, scrollY: window.scrollY, open: dashboardSections.filter(section => section.open).map(section => section.id)})); } catch (_) {}
+    };
+    document.querySelectorAll('.item-card a').forEach(link => link.addEventListener('click', () => saveDashboardState(link.closest('.item-card')?.id)));
+    window.addEventListener('pagehide', () => saveDashboardState());
+    let saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem(stateKey) || 'null'); } catch (_) {}
+    const hashTarget = location.hash ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null;
+    const savedTarget = saved?.page === pageKey && saved.itemId ? document.getElementById(saved.itemId) : null;
+    const target = hashTarget || savedTarget;
+    if (saved?.page === pageKey) saved.open.forEach(id => { const section = document.getElementById(id); if (section) section.open = true; });
+    if (target) {
+      const section = target.closest('.category-section');
+      if (section) section.open = true;
+      requestAnimationFrame(() => requestAnimationFrame(() => { target.scrollIntoView({block:'center'}); target.classList.add('return-highlight'); setTimeout(() => target.classList.remove('return-highlight'), 1400); }));
+    } else if (saved?.page === pageKey && saved.scrollY) {
+      requestAnimationFrame(() => scrollTo(0, saved.scrollY));
+    }
+  }
   </script>
 </body>
 </html>

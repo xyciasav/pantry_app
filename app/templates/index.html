@@ -30,8 +30,8 @@
     <summary class="category-heading"><span class="category-icon">{{ section.icon }}</span><span class="category-title"><strong>{{ section.label }}</strong><small>{{ section["items"]|length }} item{% if section["items"]|length != 1 %}s{% endif %}</small></span><span class="category-chevron" aria-hidden="true">⌄</span></summary>
     <div class="grid">
   {% for item in section["items"] %}
-  <article class="item-card {{ item.state }}{% if item.critical %} critical-item{% endif %}">
-    <a class="edit-link" href="{% if item.card_type == 'group' %}/groups/{{ item.id }}{% else %}/items/{{ item.id }}/edit?return_to={{ return_to|urlencode }}{% endif %}" aria-label="{% if item.card_type == 'group' %}View{% else %}Edit{% endif %} {{ item.name }}">•••</a>
+  <article id="{{ 'item-' if item.card_type == 'item' else 'group-' }}{{ item.id }}" class="item-card {{ item.state }}{% if item.critical %} critical-item{% endif %}">
+    <a class="edit-link" href="{% if item.card_type == 'group' %}/groups/{{ item.id }}{% else %}/items/{{ item.id }}/edit?return_to={{ (return_to ~ '#item-' ~ item.id)|urlencode }}{% endif %}" aria-label="{% if item.card_type == 'group' %}View{% else %}Edit{% endif %} {{ item.name }}">•••</a>
     {% if item.card_type == 'item' %}<a class="item-detail-link" href="/items/{{ item.id }}?return_to={{ return_to|urlencode }}">{% endif %}<div class="item-visual category-{{ item.category }}">{% if item.image_url %}<img src="{{ item.image_url }}" alt="{{ item.name }}">{% else %}<span>{{ item.icon }}</span>{% endif %}<em>{% if item.card_type == 'group' %}{{ item.variants|length }} brands · {{ item.active_locations }} location{% if item.active_locations != 1 %}s{% endif %}{% elif item.active_locations > 1 %}{{ item.active_locations }} locations{% else %}{{ item.location_name or 'No stock' }}{% endif %}</em></div>{% if item.card_type == 'item' %}</a>{% endif %}
     <div class="item-body">
       <div class="item-title"><div><small>{% if item.essential %}★ Essential · {% endif %}{{ item.category_label }}</small><h2>{% if item.card_type == 'item' %}<a class="item-name-link" href="/items/{{ item.id }}?return_to={{ return_to|urlencode }}">{{ item.name }}</a>{% else %}{{ item.name }}{% endif %}</h2></div>
@@ -44,11 +44,11 @@
       </div>
       <div class="quantity-row {% if item.card_type == 'group' %}group-total{% endif %}">
         {% if item.card_type == 'item' %}
-        <form method="post" action="/items/{{ item.id }}/quantity"><input type="hidden" name="delta" value="-1"><button aria-label="Remove one">−</button></form>
+        <form method="post" action="/items/{{ item.id }}/quantity"><input type="hidden" name="delta" value="-1"><input type="hidden" name="return_to" value="{{ return_to }}#item-{{ item.id }}"><button aria-label="Remove one">−</button></form>
         {% endif %}
         <div><strong>{{ item.unopened_quantity|int if item.unopened_quantity == item.unopened_quantity|int else item.unopened_quantity }}</strong><span>unopened</span>{% if item.opened_quantity %}<b class="opened-count">{{ item.opened_quantity|int if item.opened_quantity == item.opened_quantity|int else item.opened_quantity }} open</b>{% endif %}</div>
         {% if item.card_type == 'item' %}
-        <form method="post" action="/items/{{ item.id }}/quantity"><input type="hidden" name="delta" value="1"><button aria-label="Add one">＋</button></form>
+        <form method="post" action="/items/{{ item.id }}/quantity"><input type="hidden" name="delta" value="1"><input type="hidden" name="return_to" value="{{ return_to }}#item-{{ item.id }}"><button aria-label="Add one">＋</button></form>
         {% endif %}
       </div>
       {% if item.card_type == 'group' %}
