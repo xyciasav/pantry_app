@@ -20,6 +20,7 @@
   </section>
 
   <section class="manage-card"><div><h2>Local LLM API</h2><p>{% if api_enabled %}Enabled. Send <code>Authorization: Bearer YOUR_KEY</code> to <code>GET /api/inventory</code>.{% else %}Set <code>PANTRY_API_KEY</code> in Portainer to enable read-only inventory access at <code>GET /api/inventory</code>.{% endif %}</p></div><span class="api-status {{ 'enabled' if api_enabled else '' }}">{{ 'Enabled' if api_enabled else 'Not configured' }}</span></section>
-  <section class="manage-card"><div><h2>Dinner Assistant</h2><p>{% if llm_enabled %}Configured for <code>{{ llm_model }}</code>. Shelf Life sends inventory to the taste profile already configured in your proxy.{% else %}Set <code>PANTRY_LLM_URL</code>, <code>PANTRY_LLM_MODEL</code>, and optionally <code>PANTRY_LLM_API_KEY</code> in Portainer.{% endif %}</p></div><a class="secondary-button" href="/dinner">Open Dinner</a></section>
+  <section class="manage-card"><div><h2>Household tastes</h2><p>{{ profile_count }} member profile{% if profile_count != 1 %}s{% endif %}. Likes, dislikes, allergies, and spice preferences are sent with dinner requests.</p></div><a class="secondary-button" href="/household">Manage profiles</a></section>
+  <section class="manage-card"><div><h2>Dinner Assistant</h2><p>{% if llm_enabled %}Configured for <code>{{ llm_model }}</code>. Any OpenAI-compatible endpoint can be supplied through the Portainer environment variables.{% else %}Set <code>PANTRY_LLM_URL</code>, <code>PANTRY_LLM_MODEL</code>, and optionally <code>PANTRY_LLM_API_KEY</code> in Portainer.{% endif %}</p></div><a class="secondary-button" href="/dinner">Open Dinner</a></section>
 </section>
 {% endblock %}

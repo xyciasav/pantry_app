@@ -31,7 +31,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.16.1")
+APP_VERSION = os.getenv("APP_VERSION", "1.17.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -258,6 +258,19 @@ def init_db() -> None:
         )
         conn.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         conn.execute(
+            """CREATE TABLE IF NOT EXISTS household_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                likes TEXT NOT NULL DEFAULT '',
+                dislikes TEXT NOT NULL DEFAULT '',
+                avoid TEXT NOT NULL DEFAULT '',
+                spice_level TEXT NOT NULL DEFAULT 'medium',
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
             """CREATE TABLE IF NOT EXISTS saved_recipes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -426,6 +439,17 @@ def safe_return_path(value: str | None, fallback: str = "/") -> str:
 def shopping_settings(conn: sqlite3.Connection) -> dict:
     values = {row["key"]: row["value"] for row in conn.execute("SELECT key, value FROM app_settings")}
     return {"mode": values.get("shopping_mode", "analysis"), "days": int(values.get("analysis_days", "7")), "started_at": values.get("analysis_started_at", datetime.now().isoformat(timespec="seconds"))}
+
+
+def household_profiles(conn: sqlite3.Connection) -> list[dict]:
+    return [dict(row) for row in conn.execute("SELECT * FROM household_profiles ORDER BY name COLLATE NOCASE")]
+
+
+def household_taste_context(profiles: list[dict]) -> list[dict]:
+    return [{
+        "name": profile["name"], "likes": profile["likes"], "dislikes": profile["dislikes"],
+        "allergies_or_avoid": profile["avoid"], "spice_level": profile["spice_level"], "notes": profile["notes"],
+    } for profile in profiles]
 
 
 def dinner_inventory(conn: sqlite3.Connection) -> list[dict]:
@@ -618,9 +642,9 @@ def call_dinner_llm(system: str, user_data: dict, temperature: float = 0.7, max_
         raise RuntimeError(f"The LLM response could not be read: {exc}") from exc
 
 
-def ask_dinner_picks(inventory: list[dict], avoid_meals: list[str] | None = None) -> list[dict]:
+def ask_dinner_picks(inventory: list[dict], avoid_meals: list[str] | None = None, tastes: list[dict] | None = None) -> list[dict]:
     prompts = [
-        "Use your configured household food profile and the supplied pantry inventory. Choose three distinct dinner ideas. "
+        "Use the supplied structured household taste profiles and pantry inventory. Treat allergies and avoidances as hard rules, and balance individual likes and dislikes. Choose three distinct dinner ideas. "
         "Do not suggest any meal named in the do_not_repeat list. "
         "Prefer opened and soon-expiring food. Do not write recipes. Return one JSON object with a meals array. "
         "Every meal must contain a real dish name and a one-sentence summary. Never return examples, instructions, placeholders, or ellipses.",
@@ -633,7 +657,7 @@ def ask_dinner_picks(inventory: list[dict], avoid_meals: list[str] | None = None
         try:
             result = call_dinner_llm(
                 prompt,
-                {"task": "choose_actual_dinners", "do_not_repeat": avoid_meals or [], "inventory": compact_dinner_inventory(inventory)},
+                {"task": "choose_actual_dinners", "do_not_repeat": avoid_meals or [], "household_taste_profiles": tastes or [], "inventory": compact_dinner_inventory(inventory)},
                 0.7 if attempt == 0 else 0.25, 800,
             )
         except RuntimeError as exc:
@@ -657,12 +681,12 @@ def ask_dinner_picks(inventory: list[dict], avoid_meals: list[str] | None = None
     raise RuntimeError(last_error)
 
 
-def ask_dinner_recipe(inventory: list[dict], meal_name: str) -> dict:
+def ask_dinner_recipe(inventory: list[dict], meal_name: str, tastes: list[dict] | None = None) -> dict:
     result = call_dinner_llm(
-        "Use your configured household food profile. Write a practical recipe for the selected meal using the supplied inventory. "
+        "Use the supplied structured household taste profiles. Treat allergies and avoidances as hard rules. Write a practical recipe for the selected meal using the supplied inventory. "
         "Clearly distinguish pantry items from missing items. Return JSON only with name, summary, time_minutes, servings, "
         "ingredients (array of objects with item, amount, have), steps (array of short strings), and missing_items (array of strings).",
-        {"selected_meal": meal_name, "inventory": compact_dinner_inventory(inventory)}, 0.35, 2400,
+        {"selected_meal": meal_name, "household_taste_profiles": tastes or [], "inventory": compact_dinner_inventory(inventory)}, 0.35, 2400,
     )
     if not isinstance(result, dict) or not isinstance(result.get("steps"), list) or not isinstance(result.get("ingredients"), list):
         raise RuntimeError("The LLM returned the recipe in an unreadable format.")
@@ -671,7 +695,7 @@ def ask_dinner_recipe(inventory: list[dict], meal_name: str) -> dict:
     return result
 
 
-def start_dinner_job(kind: str, inventory: list[dict], meal_name: str = "", avoid_meals: list[str] | None = None) -> str:
+def start_dinner_job(kind: str, inventory: list[dict], meal_name: str = "", avoid_meals: list[str] | None = None, tastes: list[dict] | None = None) -> str:
     now = time.time()
     job_id = secrets.token_urlsafe(18)
     with DINNER_JOBS_LOCK:
@@ -681,7 +705,7 @@ def start_dinner_job(kind: str, inventory: list[dict], meal_name: str = "", avoi
 
     def run_job() -> None:
         try:
-            result = ask_dinner_picks(inventory, avoid_meals) if kind == "picks" else ask_dinner_recipe(inventory, meal_name)
+            result = ask_dinner_picks(inventory, avoid_meals, tastes) if kind == "picks" else ask_dinner_recipe(inventory, meal_name, tastes)
             error = ""
         except Exception as exc:
             result, error = None, str(exc) or "The dinner assistant could not complete this request."
@@ -1409,14 +1433,52 @@ def manage_page(request: Request, restored: str = ""):
                GROUP BY categories.key ORDER BY categories.label"""
         )]
         shop_settings = shopping_settings(conn)
-    return render(request, "manage.html", managed_categories=managed_categories, restored=restored, api_enabled=bool(API_KEY), shop_settings=shop_settings, llm_enabled=bool(LLM_URL and LLM_MODEL), llm_model=LLM_MODEL)
+        profile_count = len(household_profiles(conn))
+    return render(request, "manage.html", managed_categories=managed_categories, restored=restored, api_enabled=bool(API_KEY), shop_settings=shop_settings, profile_count=profile_count, llm_enabled=bool(LLM_URL and LLM_MODEL), llm_model=LLM_MODEL)
+
+
+@app.get("/household", response_class=HTMLResponse)
+def household_page(request: Request):
+    with closing(db()) as conn:
+        profiles = household_profiles(conn)
+    return render(request, "household.html", profiles=profiles)
+
+
+@app.post("/household")
+def save_household_member(member_id: int = Form(0), name: str = Form(...), likes: str = Form(""), dislikes: str = Form(""), avoid: str = Form(""), spice_level: str = Form("medium"), notes: str = Form("")):
+    name = name.strip()[:80]
+    if not name:
+        raise HTTPException(400, "Household member name is required")
+    if spice_level not in {"none", "mild", "medium", "hot"}:
+        spice_level = "medium"
+    values = (name, likes.strip()[:1000], dislikes.strip()[:1000], avoid.strip()[:1000], spice_level, notes.strip()[:1500])
+    now = datetime.now().isoformat(timespec="seconds")
+    try:
+        with closing(db()) as conn:
+            if member_id:
+                conn.execute("UPDATE household_profiles SET name=?,likes=?,dislikes=?,avoid=?,spice_level=?,notes=?,updated_at=? WHERE id=?", (*values, now, member_id))
+            else:
+                conn.execute("INSERT INTO household_profiles (name,likes,dislikes,avoid,spice_level,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)", (*values, now, now))
+            conn.commit()
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, "A household member with that name already exists") from exc
+    return RedirectResponse("/household", status_code=303)
+
+
+@app.post("/household/{member_id}/delete")
+def delete_household_member(member_id: int):
+    with closing(db()) as conn:
+        conn.execute("DELETE FROM household_profiles WHERE id=?", (member_id,))
+        conn.commit()
+    return RedirectResponse("/household", status_code=303)
 
 
 @app.get("/dinner", response_class=HTMLResponse)
 def dinner_page(request: Request):
     with closing(db()) as conn:
         inventory_count = len(dinner_inventory(conn))
-    return render(request, "dinner.html", inventory_count=inventory_count, meals=[], error="", llm_enabled=bool(LLM_URL and LLM_MODEL))
+        profile_count = len(household_profiles(conn))
+    return render(request, "dinner.html", inventory_count=inventory_count, profile_count=profile_count, meals=[], error="", llm_enabled=bool(LLM_URL and LLM_MODEL))
 
 
 @app.get("/dinner/generate")
@@ -1436,9 +1498,10 @@ def generate_dinner():
                   OR (planned_date BETWEEN ? AND ?)""",
             (recent_cutoff, date.today().isoformat(), upcoming_cutoff),
         )]
+        tastes = household_taste_context(household_profiles(conn))
     if not inventory:
         return JSONResponse({"detail": "Add some in-stock items before asking for dinner ideas."}, status_code=400)
-    job_id = start_dinner_job("picks", inventory, avoid_meals=avoid_meals)
+    job_id = start_dinner_job("picks", inventory, avoid_meals=avoid_meals, tastes=tastes)
     return {"job_id": job_id, "status_url": f"/dinner/jobs/{job_id}"}
 
 
@@ -1449,7 +1512,8 @@ def generate_recipe(meal_name: str = Form(...)):
         return JSONResponse({"detail": "Choose a dinner first."}, status_code=400)
     with closing(db()) as conn:
         inventory = dinner_inventory(conn)
-    job_id = start_dinner_job("recipe", inventory, meal_name)
+        tastes = household_taste_context(household_profiles(conn))
+    job_id = start_dinner_job("recipe", inventory, meal_name, tastes=tastes)
     return {"job_id": job_id, "status_url": f"/dinner/jobs/{job_id}"}
 
 
@@ -1470,7 +1534,8 @@ def dinner_job_result(request: Request, job_id: str):
     if job["kind"] == "picks":
         with closing(db()) as conn:
             inventory_count = len(dinner_inventory(conn))
-        return render(request, "dinner.html", inventory_count=inventory_count, meals=job["result"] or [], error=job["error"], llm_enabled=bool(LLM_URL and LLM_MODEL))
+            profile_count = len(household_profiles(conn))
+        return render(request, "dinner.html", inventory_count=inventory_count, profile_count=profile_count, meals=job["result"] or [], error=job["error"], llm_enabled=bool(LLM_URL and LLM_MODEL))
     return render(request, "recipe.html", recipe=job["result"], meal_name=job["meal_name"], error=job["error"], job_id=job_id, saved=False, recipe_id=None)
 
 
@@ -1501,14 +1566,21 @@ RECIPE_PROTEINS = {"none": "No main protein", "chicken": "Chicken", "beef": "Bee
 
 
 def recipe_form_payload(name: str, summary: str, time_minutes: str, servings: str, ingredients: str, steps: str, image_url: str = "", meal_type: str = "", protein: str = "", prep_days: int = 0, prep_note: str = "") -> dict:
-    ingredient_rows = [line.strip() for line in ingredients.splitlines() if line.strip()]
+    ingredient_rows = []
+    for line in ingredients.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        amount, item = (part.strip() for part in line.split("||", 1)) if "||" in line else ("", line)
+        if item:
+            ingredient_rows.append({"item": item[:300], "amount": amount[:200], "have": None})
     step_rows = [re.sub(r"^\s*\d+[.)]\s*", "", line).strip() for line in steps.splitlines() if line.strip()]
     return {
         "name": name.strip()[:200],
         "summary": summary.strip(),
         "time_minutes": time_minutes.strip(),
         "servings": servings.strip(),
-        "ingredients": [{"item": row, "amount": "", "have": None} for row in ingredient_rows],
+        "ingredients": ingredient_rows,
         "steps": step_rows,
         "missing_items": [],
         "image_url": image_url,
@@ -1673,6 +1745,74 @@ def import_outline_export(content: bytes, filename: str) -> tuple[int, int, int]
     return imported, updated, skipped
 
 
+def generic_recipe_candidates(payload: object) -> list[dict]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("recipes", "items", "data"):
+        if isinstance(payload.get(key), list):
+            return [item for item in payload[key] if isinstance(item, dict)]
+    return [payload]
+
+
+def import_generic_recipe_json(content: bytes) -> tuple[int, int, int] | None:
+    payload = json.loads(content.decode("utf-8-sig"))
+    recipes = []
+    skipped = 0
+    for raw in generic_recipe_candidates(payload):
+        name = str(raw.get("name") or raw.get("title") or "").strip()
+        raw_ingredients = raw.get("ingredients") or raw.get("recipeIngredient") or []
+        raw_steps = raw.get("steps") or raw.get("instructions") or raw.get("recipeInstructions") or []
+        if isinstance(raw_ingredients, str):
+            raw_ingredients = raw_ingredients.splitlines()
+        if isinstance(raw_steps, str):
+            raw_steps = raw_steps.splitlines()
+        if not name or not isinstance(raw_ingredients, list) or not isinstance(raw_steps, list):
+            skipped += 1
+            continue
+        ingredients = []
+        for item in raw_ingredients:
+            if isinstance(item, dict):
+                ingredient_name = str(item.get("item") or item.get("name") or item.get("ingredient") or item.get("text") or "").strip()
+                amount = str(item.get("amount") or item.get("quantity") or "").strip()
+            else:
+                ingredient_name, amount = str(item).strip(), ""
+            if ingredient_name:
+                ingredients.append({"item": ingredient_name[:300], "amount": amount[:200], "have": None})
+        steps = []
+        for step in raw_steps:
+            text = str(step.get("text") or step.get("name") or "").strip() if isinstance(step, dict) else str(step).strip()
+            if text:
+                steps.append(re.sub(r"^\s*\d+[.)]\s*", "", text))
+        if not ingredients or not steps:
+            skipped += 1
+            continue
+        recipes.append({
+            "name": name[:200], "summary": str(raw.get("summary") or raw.get("description") or "").strip(),
+            "time_minutes": str(raw.get("time_minutes") or raw.get("totalTime") or raw.get("total_minutes") or "").strip(),
+            "servings": str(raw.get("servings") or raw.get("recipeYield") or "").strip(), "ingredients": ingredients,
+            "steps": steps, "missing_items": [], "image_url": str(raw.get("image_url") or raw.get("image") or "").strip(),
+            "meal_type": str(raw.get("meal_type") or ""), "protein": str(raw.get("protein") or ""),
+            "prep_days": max(0, min(14, int(raw.get("prep_days") or 0))), "prep_note": str(raw.get("prep_note") or "").strip()[:500],
+        })
+    if not recipes:
+        return None
+    imported = updated = 0
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(db()) as conn:
+        for recipe in recipes:
+            existing = conn.execute("SELECT id FROM saved_recipes WHERE name=? COLLATE NOCASE", (recipe["name"],)).fetchone()
+            if existing:
+                conn.execute("UPDATE saved_recipes SET recipe_json=?,source='json-import',updated_at=? WHERE id=?", (json.dumps(recipe, ensure_ascii=False), now, existing["id"]))
+                updated += 1
+            else:
+                conn.execute("INSERT INTO saved_recipes (name,recipe_json,pinned,source,created_at,updated_at) VALUES (?,?,1,'json-import',?,?)", (recipe["name"], json.dumps(recipe, ensure_ascii=False), now, now))
+                imported += 1
+        conn.commit()
+    return imported, updated, skipped
+
+
 INGREDIENT_UNITS = {
     "cup", "cups", "tbsp", "tablespoon", "tablespoons", "tsp", "teaspoon", "teaspoons", "oz", "ounce", "ounces",
     "lb", "lbs", "pound", "pounds", "g", "kg", "ml", "l", "can", "cans", "package", "packages", "bag", "bags",
@@ -1816,13 +1956,14 @@ def create_recipe(name: str = Form(...), summary: str = Form(""), time_minutes: 
 async def import_recipes(recipe_file: UploadFile = File(...)):
     filename = recipe_file.filename or ""
     if not filename.lower().endswith((".zip", ".json")):
-        raise HTTPException(400, "Choose an Outline JSON export or its ZIP file")
+        raise HTTPException(400, "Choose a recipe JSON file or an Outline ZIP export")
     content = await recipe_file.read(80 * 1024 * 1024 + 1)
     if len(content) > 80 * 1024 * 1024:
         raise HTTPException(413, "Recipe export is larger than 80 MB")
     try:
-        imported, updated, skipped = import_outline_export(content, filename)
-    except (ValueError, json.JSONDecodeError, zipfile.BadZipFile, KeyError) as exc:
+        generic_result = import_generic_recipe_json(content) if filename.lower().endswith(".json") else None
+        imported, updated, skipped = generic_result or import_outline_export(content, filename)
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, zipfile.BadZipFile, KeyError) as exc:
         raise HTTPException(400, f"Could not import this recipe export: {exc}") from exc
     return RedirectResponse(f"/recipes?imported={imported}&updated={updated}&skipped={skipped}", status_code=303)
 
@@ -1834,7 +1975,7 @@ def edit_recipe_page(request: Request, recipe_id: int):
     if not row:
         raise HTTPException(404, "Saved recipe not found")
     recipe = json.loads(row["recipe_json"])
-    ingredients = "\n".join(str(item.get("item", "")) for item in recipe.get("ingredients", []))
+    ingredients = "\n".join(f"{str(item.get('amount', '')).strip()} || {str(item.get('item', '')).strip()}" for item in recipe.get("ingredients", []) if str(item.get("item", "")).strip())
     steps = "\n".join(str(step) for step in recipe.get("steps", []))
     return render(request, "recipe_form.html", form_title="Edit recipe", action=f"/recipes/{recipe_id}/edit", recipe=recipe, ingredients=ingredients, steps=steps, recipe_types=RECIPE_TYPES, recipe_proteins=RECIPE_PROTEINS)
 

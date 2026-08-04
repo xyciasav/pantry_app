@@ -2,7 +2,7 @@
 {% block title %}What's for Dinner? · Shelf Life{% endblock %}
 {% block content %}
 <section class="dinner-shell">
-  <div class="dinner-heading"><div><p class="eyebrow">PANTRY ASSISTANT</p><h1>What's for Dinner?</h1><p>Let your configured assistant choose up to three meals from what is in the kitchen.</p></div><div class="dinner-heading-actions"><a class="secondary-button" href="/meal-plan">▦ Weekly plan</a><a class="secondary-button" href="/recipes">📌 Saved recipes</a><span class="api-status {{ 'enabled' if llm_enabled else '' }}">{{ 'LLM ready' if llm_enabled else 'Setup needed' }}</span></div></div>
+  <div class="dinner-heading"><div><p class="eyebrow">PANTRY ASSISTANT</p><h1>What's for Dinner?</h1><p>Choose meals from your inventory and {{ profile_count }} household taste profile{% if profile_count != 1 %}s{% endif %}.</p></div><div class="dinner-heading-actions"><a class="secondary-button" href="/household">♥ Tastes</a><a class="secondary-button" href="/meal-plan">▦ Weekly plan</a><a class="secondary-button" href="/recipes">📌 Saved recipes</a><span class="api-status {{ 'enabled' if llm_enabled else '' }}">{{ 'LLM ready' if llm_enabled else 'Setup needed' }}</span></div></div>
   {% if error %}<div class="dinner-error"><strong>Could not get dinner ideas</strong><span>{{ error }}</span></div>{% endif %}
   <form class="dinner-pick-form llm-form" method="post" action="/dinner/generate">
     <button class="dinner-generate" type="submit" {% if not llm_enabled %}disabled{% endif %}><span>🍽</span><strong>Pick dinner</strong><small>Uses {{ inventory_count }} in-stock products</small></button>

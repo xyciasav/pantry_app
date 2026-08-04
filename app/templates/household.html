@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Household tastes · Shelf Life{% endblock %}
+{% block content %}
+<section class="form-shell household-shell">
+  <a class="back" href="/manage">← Back to settings</a>
+  <div class="form-heading"><p class="eyebrow">DINNER PREFERENCES</p><h1>Household taste profiles</h1><p>Shelf Life sends these preferences with every dinner request. Allergies and avoidances are treated as hard rules.</p></div>
+  <section class="manage-card manage-stack household-new"><div><h2>Add household member</h2><p>Use plain language and separate foods with commas.</p></div>
+    <form class="household-form" method="post" action="/household">
+      <label><span>Name</span><input name="name" required placeholder="Mike"></label>
+      <label><span>Spice preference</span><select name="spice_level"><option value="none">No spice</option><option value="mild">Mild</option><option value="medium" selected>Medium</option><option value="hot">Hot</option></select></label>
+      <label><span>Likes</span><textarea name="likes" rows="3" placeholder="smoky flavors, pasta, roasted vegetables"></textarea></label>
+      <label><span>Dislikes</span><textarea name="dislikes" rows="3" placeholder="mushrooms, overly sweet sauces"></textarea></label>
+      <label class="wide"><span>Allergies or must avoid</span><textarea name="avoid" rows="2" placeholder="peanuts, shellfish"></textarea></label>
+      <label class="wide"><span>Other notes</span><textarea name="notes" rows="2" placeholder="Prefers sauce on the side"></textarea></label>
+      <button class="save-button wide" type="submit">Add person</button>
+    </form>
+  </section>
+  <div class="household-list">{% for member in profiles %}<article class="manage-card manage-stack"><form class="household-form" method="post" action="/household"><input type="hidden" name="member_id" value="{{ member.id }}"><label><span>Name</span><input name="name" value="{{ member.name }}" required></label><label><span>Spice preference</span><select name="spice_level">{% for level in ['none','mild','medium','hot'] %}<option value="{{ level }}" {{ 'selected' if member.spice_level == level else '' }}>{{ level|title }}</option>{% endfor %}</select></label><label><span>Likes</span><textarea name="likes" rows="3">{{ member.likes }}</textarea></label><label><span>Dislikes</span><textarea name="dislikes" rows="3">{{ member.dislikes }}</textarea></label><label class="wide"><span>Allergies or must avoid</span><textarea name="avoid" rows="2">{{ member.avoid }}</textarea></label><label class="wide"><span>Other notes</span><textarea name="notes" rows="2">{{ member.notes }}</textarea></label><button class="save-button" type="submit">Save {{ member.name }}</button></form><form method="post" action="/household/{{ member.id }}/delete" onsubmit="return confirm('Remove this taste profile?')"><button class="text-danger" type="submit">Remove</button></form></article>{% else %}<div class="shopping-empty"><strong>No profiles yet.</strong><span>Add each person so dinner suggestions work for the whole household.</span></div>{% endfor %}</div>
+</section>
+{% endblock %}

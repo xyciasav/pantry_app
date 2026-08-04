@@ -45,11 +45,11 @@ Changing the password or signing key immediately invalidates existing sessions. 
 
 ### Version and image name
 
-The default Docker image is named `shelf-life:1.16.1`, and the same version appears in the website header, footer, and `/health` response.
+The default Docker image is named `shelf-life:1.17.0`, and the same version appears in the website header, footer, and `/health` response.
 
 Portainer stack variables can override these values:
 
-- `PANTRY_VERSION=1.16.1` controls the Docker tag and displayed website version.
+- `PANTRY_VERSION=1.17.0` controls the Docker tag and displayed website version.
 - `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
 
 For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.
@@ -71,13 +71,14 @@ For each release, change `PANTRY_VERSION` to the new version before rebuilding t
 - A private What's for Dinner assistant that uses current inventory, expiry dates, and a saved household taste profile
 - A persistent, mobile-friendly Saved Recipes cookbook included in normal Shelf Life backups
 - A weekly meal-planning board with drag-and-drop cards, mobile move controls, cooked history, and repeat avoidance
-- A standalone recipe cookbook with manual add/edit and repeatable Outline JSON/ZIP imports, including recipe photos
+- A recipe builder with structured ingredients and steps, plus regular recipe JSON and repeatable Outline JSON/ZIP imports
+- Household taste profiles for likes, dislikes, allergies, spice preferences, and personalized dinner generation
 - Inventory-aware recipes that show missing ingredients and suggest meals unlocked by buying one or two items
 - Recipe meal-style and protein labels with a balanced weekly planner that preserves existing choices
 
 ## Recipe imports
 
-Open **Recipes** and choose an Outline export ZIP or its `Recipes.json` file. The ZIP format is recommended because it also contains the uploaded recipe photos. Shelf Life recognizes ingredient and instruction sections, skips weekly meal-plan documents, and updates matching Outline recipes when the same export is imported again.
+Open **Recipes** and choose a regular recipe JSON file, an Outline export ZIP, or its `Recipes.json` file. Shelf Life recognizes common `name`/`title`, `ingredients`, and `instructions`/`steps` fields. The Outline ZIP format is recommended for Outline exports because it also contains uploaded recipe photos.
 
 ## Dinner Assistant
 
@@ -89,7 +90,7 @@ PANTRY_LLM_MODEL=lmstudio-proxy-ha
 PANTRY_LLM_API_KEY=YOUR_PROXY_KEY
 ```
 
-Leave `PANTRY_LLM_API_KEY` blank if the proxy does not require authentication. The API key stays in the container environment and is never shown or saved in the pantry database. The Dinner page sends in-stock item names, amounts, ingredient labels, and expiry dates to the configured proxy. Your proxy's existing assistant prompt supplies the household profile. Shelf Life first requests up to three meal names; it requests the full recipe only after you select one. It does not change inventory automatically.
+Leave `PANTRY_LLM_API_KEY` blank if the endpoint does not require authentication. The API key stays in the container environment and is never shown or saved in the pantry database. The URL may point to a local proxy or another OpenAI-compatible `/v1` endpoint. The Dinner page sends inventory plus the structured household taste profiles managed inside Shelf Life. It first requests up to three meal names and requests the full recipe only after you select one. It does not change inventory automatically.
 
 Generated recipes can be pinned into Shelf Life's Saved Recipes cookbook. The saved record includes reserved source and Outline ID fields so a later Outline publishing integration can be added without changing the recipe format; version 1.10.0 does not contact or publish to Outline.
 
