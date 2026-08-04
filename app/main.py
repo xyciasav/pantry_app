@@ -31,7 +31,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.15.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.15.1")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -476,6 +476,60 @@ def extract_meals_from_prose(content: str) -> dict | None:
     return {"meals": meals} if meals else None
 
 
+def extract_recipe_from_truncated_response(content: str) -> dict | None:
+    """Recover completed recipe fields when a reasoning-heavy model truncates its outer JSON object."""
+    decoder = json.JSONDecoder()
+    arrays = []
+    for match in re.finditer(r"\[", content):
+        try:
+            value, _ = decoder.raw_decode(content[match.start():])
+            if isinstance(value, list):
+                arrays.append(value)
+        except json.JSONDecodeError:
+            continue
+    ingredient_arrays = [value for value in arrays if value and all(isinstance(row, dict) and "item" in row for row in value)]
+    step_arrays = [value for value in arrays if len(value) >= 2 and all(isinstance(row, str) for row in value)]
+    if not ingredient_arrays or not step_arrays:
+        return None
+    ingredients = max(ingredient_arrays, key=len)
+    steps = max(step_arrays, key=len)
+    name_match = re.search(r'"name"\s*:\s*"([^"]+)"', content)
+    if not name_match:
+        name_match = re.search(r"(?im)^\s*Name\s*:\s*([^\r\n]+)", content)
+    summary_match = re.search(r'"summary"\s*:\s*"([^"]+)"', content)
+    if not summary_match:
+        summary_match = re.search(r"(?im)^\s*Summary\s*:\s*([^\r\n]+)", content)
+    time_match = re.search(r'"time_minutes"\s*:\s*(?:"([^"]+)"|(\d+))', content)
+    if not time_match:
+        time_match = re.search(r"(?im)^\s*Time\s*:\s*(\d+)", content)
+    servings_match = re.search(r'"servings"\s*:\s*(?:"([^"]+)"|(\d+))', content)
+    if not servings_match:
+        servings_match = re.search(r"(?im)^\s*Servings\s*:\s*([^\r\n]+)", content)
+    if not name_match:
+        return None
+    missing_items = []
+    for match in re.finditer(r"(?i)(?:missing_items|missing items)\s*[\":]*\s*(\[)", content):
+        try:
+            value, _ = decoder.raw_decode(content[match.start(1):])
+            if isinstance(value, list) and all(isinstance(row, str) for row in value):
+                missing_items = value
+                break
+        except json.JSONDecodeError:
+            continue
+    def matched_value(match) -> str | int:
+        if not match:
+            return ""
+        values = [value for value in match.groups() if value is not None] if match.lastindex else [match.group(1)]
+        value = values[0].strip() if values else ""
+        return int(value) if value.isdigit() else value
+    return {
+        "name": name_match.group(1).strip(),
+        "summary": summary_match.group(1).strip() if summary_match else "Recovered from the completed recipe response.",
+        "time_minutes": matched_value(time_match), "servings": matched_value(servings_match),
+        "ingredients": ingredients, "steps": steps, "missing_items": missing_items,
+    }
+
+
 def parse_llm_json(content: str) -> dict:
     cleaned = content.strip()
     if cleaned.startswith("```"):
@@ -492,6 +546,9 @@ def parse_llm_json(content: str) -> dict:
             continue
     prose_meals = extract_meals_from_prose(cleaned)
     if not candidates:
+        recovered_recipe = extract_recipe_from_truncated_response(cleaned)
+        if recovered_recipe:
+            return recovered_recipe
         if prose_meals:
             return prose_meals
         raise ValueError("the model did not return valid JSON")
@@ -507,6 +564,9 @@ def parse_llm_json(content: str) -> dict:
     for candidate in reversed(candidates):
         if isinstance(candidate.get("steps"), list) and isinstance(candidate.get("ingredients"), list):
             return candidate
+    recovered_recipe = extract_recipe_from_truncated_response(cleaned)
+    if recovered_recipe:
+        return recovered_recipe
     if prose_meals:
         return prose_meals
     partial_meals = [candidate for candidate in candidates if str(candidate.get("name", "")).strip() not in {"", "..."} and "summary" in candidate]
