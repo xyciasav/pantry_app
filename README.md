@@ -45,11 +45,11 @@ Changing the password or signing key immediately invalidates existing sessions. 
 
 ### Version and image name
 
-The default Docker image is named `shelf-life:1.14.2`, and the same version appears in the website header, footer, and `/health` response.
+The default Docker image is named `shelf-life:1.15.0`, and the same version appears in the website header, footer, and `/health` response.
 
 Portainer stack variables can override these values:
 
-- `PANTRY_VERSION=1.14.2` controls the Docker tag and displayed website version.
+- `PANTRY_VERSION=1.15.0` controls the Docker tag and displayed website version.
 - `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
 
 For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.
@@ -93,17 +93,28 @@ Leave `PANTRY_LLM_API_KEY` blank if the proxy does not require authentication. T
 
 Generated recipes can be pinned into Shelf Life's Saved Recipes cookbook. The saved record includes reserved source and Outline ID fields so a later Outline publishing integration can be added without changing the recipe format; version 1.10.0 does not contact or publish to Outline.
 
-## Local LLM inventory API
+## Read-only dashboard and LLM API
 
-Set a long random `PANTRY_API_KEY` in Portainer, then query the read-only endpoint:
+Set a long random `PANTRY_API_KEY` in Portainer, then send it as a Bearer token:
 
 ```bash
 curl -H "Authorization: Bearer YOUR_KEY" https://your-shelf-life.example/api/inventory
 ```
 
-The response includes every item, product group, unopened/open totals, locations, dated batches, barcodes, notes, and stock state. The API key does not grant write access.
+Available endpoints:
 
-OpenAPI discovery and interactive documentation are available without a webpage login at `/openapi.json` and `/docs`. Inventory data still requires the Bearer API key.
+- `/api/dashboard` — combined summary, current weekly menu, alerts, shopping list, and recipe readiness
+- `/api/inventory` — every item, group, unopened/open total, location, dated batch, barcode, note, and stock state
+- `/api/alerts` — out, low, opened-low, critical, expiring, and expired items
+- `/api/weekly-menu` — the current week, or use `?week=YYYY-MM-DD` for another week
+- `/api/shopping-list` — tracked pantry purchases and recipe-only ingredients
+- `/api/recipes` — saved recipes with meal type, protein, missing ingredients, and cookable status
+- `/api/recipes?include_details=true` — also include ingredients, instructions, time, servings, and photos
+- `/api/recipes/{id}` — one complete recipe with live inventory readiness
+
+The API key grants read-only access and does not allow inventory or meal-plan changes.
+
+OpenAPI discovery and interactive documentation are available without a webpage login at `/openapi.json` and `/docs`. All `/api/*` data endpoints require the Bearer API key.
 - Phone camera barcode scanning with Open Food Facts product lookup
 - One-tap quantity adjustment
 - Purchase and expiration dates

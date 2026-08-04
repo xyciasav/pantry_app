@@ -31,7 +31,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.14.2")
+APP_VERSION = os.getenv("APP_VERSION", "1.15.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -156,7 +156,7 @@ async def require_login(request: Request, call_next):
     path = request.url.path
     public = path in {"/login", "/health", "/docs", "/openapi.json", "/manifest.webmanifest", "/sw.js"} or path.startswith("/static/")
     session_token = request.cookies.get(COOKIE_NAME) or request.cookies.get(LEGACY_COOKIE_NAME)
-    api_access = path == "/api/inventory" and valid_api_key(request)
+    api_access = path.startswith("/api/") and valid_api_key(request)
     if not public and not api_access and not valid_session_token(session_token):
         if path.startswith("/api/"):
             return prevent_browser_cache(JSONResponse({"detail": "Authentication required"}, status_code=401))
@@ -2300,3 +2300,119 @@ def inventory_api():
             "barcode": item.get("barcode"), "notes": item["notes"], "ingredients": item.get("ingredients", ""), "locations": stocks.get(item["id"], []), "batches": batches.get(item["id"], []),
         })
     return {"version": APP_VERSION, "generated_at": datetime.now().isoformat(timespec="seconds"), "items": inventory}
+
+
+@app.get("/api/alerts", dependencies=[Depends(require_api_key)], summary="Get low-stock and expiry alerts")
+def alerts_api():
+    items = inventory_api()["items"]
+    alerts = [item for item in items if item["state"] in {"out", "low", "expired", "expiring"} or item["critical"] or item["opened_low"]]
+    priority = {"out": 0, "expired": 1, "low": 2, "expiring": 3, "ok": 4}
+    alerts.sort(key=lambda item: (not item["critical"], priority.get(item["state"], 9), item["name"].lower()))
+    counts = {
+        "total": len(alerts), "critical": sum(bool(item["critical"]) for item in alerts),
+        "out": sum(item["state"] == "out" for item in alerts), "low": sum(item["state"] == "low" for item in alerts),
+        "expiring": sum(item["state"] == "expiring" for item in alerts), "expired": sum(item["state"] == "expired" for item in alerts),
+        "opened_low": sum(bool(item["opened_low"]) for item in alerts),
+    }
+    return {"version": APP_VERSION, "generated_at": datetime.now().isoformat(timespec="seconds"), "counts": counts, "items": alerts}
+
+
+@app.get("/api/weekly-menu", dependencies=[Depends(require_api_key)], summary="Get a weekly meal plan")
+def weekly_menu_api(week: str = ""):
+    week_start = monday_for(week)
+    week_end = week_start + timedelta(days=6)
+    with closing(db()) as conn:
+        rows = conn.execute(
+            """SELECT meal_plan.*, saved_recipes.recipe_json FROM meal_plan
+               LEFT JOIN saved_recipes ON saved_recipes.id=meal_plan.recipe_id
+               WHERE planned_date BETWEEN ? AND ? ORDER BY planned_date, position, meal_plan.id""",
+            (week_start.isoformat(), week_end.isoformat()),
+        ).fetchall()
+    by_date: dict[str, list[dict]] = {}
+    for row in rows:
+        entry = {"id": row["id"], "recipe_id": row["recipe_id"], "name": row["recipe_name"], "cooked": bool(row["cooked_at"]), "cooked_at": row["cooked_at"], "position": row["position"]}
+        if row["recipe_json"]:
+            try:
+                entry.update(recipe_labels(json.loads(row["recipe_json"])))
+            except json.JSONDecodeError:
+                pass
+        by_date.setdefault(row["planned_date"], []).append(entry)
+    days = []
+    for offset in range(7):
+        day = week_start + timedelta(days=offset)
+        days.append({"date": day.isoformat(), "weekday": day.strftime("%A"), "today": day == date.today(), "meals": by_date.get(day.isoformat(), [])})
+    return {"version": APP_VERSION, "week_start": week_start.isoformat(), "week_end": week_end.isoformat(), "days": days}
+
+
+@app.get("/api/shopping-list", dependencies=[Depends(require_api_key)], summary="Get tracked and recipe shopping items")
+def shopping_list_api():
+    with closing(db()) as conn:
+        tracked = [dict(row) for row in conn.execute(
+            """SELECT shopping_list.item_id, items.name, items.unit, shopping_list.reason,
+                      shopping_list.automatic, shopping_list.added_at
+               FROM shopping_list JOIN items ON items.id=shopping_list.item_id ORDER BY shopping_list.added_at DESC"""
+        )]
+        extras = [dict(row) for row in conn.execute("SELECT id, name, reason, recipe_id, added_at FROM shopping_extras ORDER BY added_at DESC")]
+    for item in tracked:
+        item["automatic"] = bool(item["automatic"])
+        item["kind"] = "inventory"
+    for item in extras:
+        item["kind"] = "recipe_ingredient"
+    return {"version": APP_VERSION, "count": len(tracked) + len(extras), "items": tracked + extras}
+
+
+@app.get("/api/recipes", dependencies=[Depends(require_api_key)], summary="Get saved recipes and inventory readiness")
+def recipes_api(include_details: bool = False):
+    with closing(db()) as conn:
+        catalog = recipe_inventory_catalog(conn)
+        rows = conn.execute("SELECT id, name, source, pinned, created_at, updated_at, recipe_json FROM saved_recipes ORDER BY name").fetchall()
+    recipes = []
+    for row in rows:
+        try:
+            recipe = inventory_aware_recipe(json.loads(row["recipe_json"]), catalog)
+        except json.JSONDecodeError:
+            continue
+        labels = recipe_labels(recipe)
+        item = {
+            "id": row["id"], "name": row["name"], "source": row["source"], "pinned": bool(row["pinned"]),
+            "created_at": row["created_at"], "updated_at": row["updated_at"], "cookable": recipe["cookable"],
+            "missing_count": len(recipe["inventory_missing"]), "missing_items": recipe["missing_items"], **labels,
+        }
+        if include_details:
+            item.update(summary=recipe.get("summary", ""), time_minutes=recipe.get("time_minutes", ""), servings=recipe.get("servings", ""), ingredients=recipe.get("ingredients", []), steps=recipe.get("steps", []), image_url=recipe.get("image_url", ""))
+        recipes.append(item)
+    return {"version": APP_VERSION, "count": len(recipes), "recipes": recipes}
+
+
+@app.get("/api/recipes/{recipe_id}", dependencies=[Depends(require_api_key)], summary="Get one recipe with inventory readiness")
+def recipe_api(recipe_id: int):
+    with closing(db()) as conn:
+        row = conn.execute("SELECT * FROM saved_recipes WHERE id=?", (recipe_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Recipe not found")
+        recipe = inventory_aware_recipe(json.loads(row["recipe_json"]), recipe_inventory_catalog(conn))
+    recipe.update(recipe_labels(recipe))
+    return {"id": recipe_id, "source": row["source"], "pinned": bool(row["pinned"]), **recipe}
+
+
+@app.get("/api/dashboard", dependencies=[Depends(require_api_key)], summary="Get the combined Shelf Life dashboard")
+def dashboard_api(week: str = ""):
+    inventory = inventory_api()["items"]
+    alerts = alerts_api()
+    shopping = shopping_list_api()
+    recipes = recipes_api()
+    menu = weekly_menu_api(week)
+    return {
+        "version": APP_VERSION,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "summary": {
+            "inventory_items": len(inventory), "total_units": sum(float(item["total"]) for item in inventory),
+            "alerts": alerts["counts"], "shopping_items": shopping["count"], "saved_recipes": recipes["count"],
+            "cookable_recipes": sum(bool(recipe["cookable"]) for recipe in recipes["recipes"]),
+            "planned_meals": sum(len(day["meals"]) for day in menu["days"]),
+        },
+        "weekly_menu": menu,
+        "alerts": alerts,
+        "shopping_list": shopping,
+        "recipe_readiness": recipes,
+    }
