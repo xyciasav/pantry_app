@@ -31,7 +31,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.16.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.16.1")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -1679,6 +1679,7 @@ INGREDIENT_UNITS = {
     "jar", "jars", "bottle", "bottles", "clove", "cloves", "slice", "slices", "small", "medium", "large",
 }
 INGREDIENT_QUALIFIERS = {"soup", "sauce", "broth", "stock", "paste", "powder", "seasoning", "cheese", "cream", "flour", "oil", "vinegar"}
+PANTRY_STAPLES = {"water", "tap water"}
 
 
 def normalized_ingredient_name(value: str) -> str:
@@ -1716,7 +1717,7 @@ def ingredient_inventory_match(ingredient: str, catalog: list[dict]) -> dict | N
     wanted_words = set(wanted.split())
     wanted_qualifiers = wanted_words & INGREDIENT_QUALIFIERS
     best = None
-    best_score = 0.0
+    best_rank = (-1, 0.0)
     for item in catalog:
         for key in item["keys"]:
             if not key:
@@ -1726,12 +1727,16 @@ def ingredient_inventory_match(ingredient: str, catalog: list[dict]) -> dict | N
             if wanted_qualifiers and not wanted_qualifiers.issubset(key_words):
                 continue
             exact_phrase = wanted in key or key in wanted
+            wanted_pairs = set(zip(wanted.split(), wanted.split()[1:]))
+            key_pairs = set(zip(key.split(), key.split()[1:]))
+            shared_phrase = bool(wanted_pairs & key_pairs)
             overlap = len(wanted_words & key_words)
-            score = 1.0 if exact_phrase else overlap / max(1, min(len(wanted_words), len(key_words)))
+            score = 1.0 if exact_phrase else 0.9 if shared_phrase else overlap / max(1, min(len(wanted_words), len(key_words)))
             if key_qualifiers and not key_qualifiers.issubset(wanted_words):
                 score *= 0.5
-            if overlap and score > best_score and (exact_phrase or score >= 0.67):
-                best, best_score = item, score
+            rank = (int(item["quantity"] > 0), score)
+            if overlap and rank > best_rank and (exact_phrase or shared_phrase or score >= 0.67):
+                best, best_rank = item, rank
     return best
 
 
@@ -1741,14 +1746,19 @@ def inventory_aware_recipe(recipe: dict, catalog: list[dict]) -> dict:
     missing = []
     for raw in recipe.get("ingredients", []):
         row = dict(raw) if isinstance(raw, dict) else {"item": str(raw), "amount": ""}
-        ingredient_text = " ".join(part for part in (str(row.get("amount", "")).strip(), str(row.get("item", "")).strip()) if part)
+        item_text = str(row.get("item", "")).strip()
+        amount_text = str(row.get("amount", "")).strip()
+        ingredient_text = item_text or amount_text
         match = ingredient_inventory_match(ingredient_text, catalog)
-        row["have"] = bool(match and match["quantity"] > 0)
+        normalized_name = normalized_ingredient_name(ingredient_text)
+        optional = "optional" in f"{item_text} {amount_text}".lower()
+        assumed_available = normalized_name in PANTRY_STAPLES
+        row["have"] = True if match and match["quantity"] > 0 else None if optional or assumed_available else False
         row["inventory_item_id"] = match["id"] if match else None
         row["inventory_name"] = match["name"] if match else ""
         ingredient_rows.append(row)
-        if not row["have"]:
-            missing.append({"name": normalized_ingredient_name(ingredient_text).title() or ingredient_text, "item_id": match["id"] if match else None})
+        if row["have"] is False:
+            missing.append({"name": normalized_name.title() or ingredient_text, "item_id": match["id"] if match else None})
     unique_missing = []
     seen = set()
     for item in missing:
