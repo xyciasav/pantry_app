@@ -31,7 +31,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.11.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.12.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -1419,11 +1419,222 @@ def save_recipe(job_id: str = Form(...)):
     return RedirectResponse(f"/recipes/{recipe_id}?saved=1", status_code=303)
 
 
-@app.get("/recipes", response_class=HTMLResponse)
-def saved_recipes_page(request: Request):
+def recipe_form_payload(name: str, summary: str, time_minutes: str, servings: str, ingredients: str, steps: str, image_url: str = "") -> dict:
+    ingredient_rows = [line.strip() for line in ingredients.splitlines() if line.strip()]
+    step_rows = [re.sub(r"^\s*\d+[.)]\s*", "", line).strip() for line in steps.splitlines() if line.strip()]
+    return {
+        "name": name.strip()[:200],
+        "summary": summary.strip(),
+        "time_minutes": time_minutes.strip(),
+        "servings": servings.strip(),
+        "ingredients": [{"item": row, "amount": "", "have": None} for row in ingredient_rows],
+        "steps": step_rows,
+        "missing_items": [],
+        "image_url": image_url,
+    }
+
+
+def outline_text(node: dict) -> str:
+    if node.get("type") == "text":
+        return str(node.get("text", ""))
+    if node.get("type") == "hard_break":
+        return "\n"
+    return "".join(outline_text(child) for child in node.get("content", []))
+
+
+def outline_list_items(node: dict) -> list[str]:
+    rows = []
+    for child in node.get("content", []):
+        text = " ".join(outline_text(child).split())
+        if text:
+            rows.append(text)
+    return rows
+
+
+def outline_first_image_id(node: dict) -> str | None:
+    if node.get("type") == "image":
+        match = re.search(r"id=([0-9a-f-]+)", str(node.get("attrs", {}).get("src", "")), re.I)
+        if match:
+            return match.group(1)
+    for child in node.get("content", []):
+        image_id = outline_first_image_id(child)
+        if image_id:
+            return image_id
+    return None
+
+
+def outline_recipe(document: dict) -> tuple[dict | None, str | None]:
+    title = str(document.get("title") or "Untitled recipe").strip()
+    if re.search(r"\b(weekly|meal)\s+(meal\s+)?plan\b", title, re.I):
+        return None, None
+    root = document.get("data") or {}
+    ingredients: list[str] = []
+    steps: list[str] = []
+    paragraphs: list[str] = []
+    section = ""
+    first_image_id = outline_first_image_id(root)
+    for node in root.get("content", []):
+        node_type = node.get("type")
+        text = " ".join(outline_text(node).split())
+        if node_type == "heading":
+            heading = text.lower()
+            if any(word in heading for word in ("ingredient", "topping", "for the ")):
+                section = "ingredients"
+            elif any(word in heading for word in ("instruction", "direction", "method", "how to", "preparation", "steps")):
+                section = "steps"
+            else:
+                section = ""
+        elif node_type in {"bullet_list", "ordered_list", "task_list"}:
+            rows = outline_list_items(node)
+            if section == "ingredients":
+                ingredients.extend(rows)
+            elif section == "steps" or node_type == "ordered_list":
+                steps.extend(rows)
+        elif node_type == "paragraph" and text:
+            if section == "ingredients":
+                ingredients.append(text)
+            elif section == "steps":
+                steps.append(text)
+            else:
+                paragraphs.append(text)
+    if not ingredients or not steps:
+        return None, first_image_id
+    joined = " ".join(paragraphs[:6])
+    time_match = re.search(r"\btotal(?:\s+time)?\s*[:\-]?\s*(\d+)\s*(?:min|minute)", joined, re.I)
+    if not time_match:
+        time_match = re.search(r"\b(\d+)\s*(?:min|minute)s?\b", joined, re.I)
+    serving_match = re.search(r"\b(?:serves|servings?|yield)\s*[:\-]?\s*([\w -]{1,20})", joined, re.I)
+    summary = next((p for p in paragraphs if not re.search(r"\b(?:prep|cook|total|servings?|yield)\s*:", p, re.I)), "Imported from Outline.")
+    recipe = recipe_form_payload(title, summary, time_match.group(1) if time_match else "", serving_match.group(1).strip() if serving_match else "", "\n".join(ingredients), "\n".join(steps))
+    return recipe, first_image_id
+
+
+def safe_recipe_image(archive: zipfile.ZipFile, member: str, document_id: str) -> str:
+    member_info = next((info for info in archive.infolist() if info.filename == member), None)
+    if not member_info or member_info.file_size > 25 * 1024 * 1024:
+        return ""
+    extensions = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+    extension = Path(member).suffix.lower()
+    if extension not in extensions:
+        return ""
+    target_dir = UPLOAD_DIR / "recipes"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{re.sub(r'[^a-zA-Z0-9-]', '', document_id)}{extension}"
+    (target_dir / filename).write_bytes(archive.read(member_info))
+    return f"/uploads/recipes/{filename}"
+
+
+def import_outline_export(content: bytes, filename: str) -> tuple[int, int, int]:
+    archive = None
+    if filename.lower().endswith(".zip"):
+        archive = zipfile.ZipFile(io.BytesIO(content))
+        if "Recipes.json" not in archive.namelist():
+            raise ValueError("This ZIP does not contain Recipes.json")
+        payload = json.loads(archive.read("Recipes.json"))
+    else:
+        payload = json.loads(content)
+    documents = payload.get("documents", {})
+    attachments = payload.get("attachments", {})
+    if not isinstance(documents, dict):
+        raise ValueError("The export does not contain an Outline documents collection")
+    imported = updated = skipped = 0
+    now = datetime.now().isoformat(timespec="seconds")
     with closing(db()) as conn:
-        rows = [dict(row) for row in conn.execute("SELECT id, name, pinned, created_at FROM saved_recipes ORDER BY pinned DESC, updated_at DESC")]
-    return render(request, "recipes.html", saved_recipes=rows)
+        for document_id, document in documents.items():
+            recipe, image_id = outline_recipe(document)
+            if not recipe:
+                skipped += 1
+                continue
+            if archive and image_id and image_id in attachments:
+                recipe["image_url"] = safe_recipe_image(archive, str(attachments[image_id].get("key", "")), document_id)
+            outline_id = str(document.get("id") or document_id)
+            existing = conn.execute("SELECT id, recipe_json FROM saved_recipes WHERE outline_id=?", (outline_id,)).fetchone()
+            if existing:
+                if not recipe.get("image_url"):
+                    try:
+                        recipe["image_url"] = json.loads(existing["recipe_json"]).get("image_url", "")
+                    except (json.JSONDecodeError, AttributeError):
+                        pass
+                conn.execute("UPDATE saved_recipes SET name=?, recipe_json=?, source='outline-import', updated_at=? WHERE id=?", (recipe["name"], json.dumps(recipe, ensure_ascii=False), now, existing["id"]))
+                updated += 1
+            else:
+                conn.execute("INSERT INTO saved_recipes (name, recipe_json, pinned, source, outline_id, created_at, updated_at) VALUES (?, ?, 1, 'outline-import', ?, ?, ?)", (recipe["name"], json.dumps(recipe, ensure_ascii=False), outline_id, now, now))
+                imported += 1
+        conn.commit()
+    if archive:
+        archive.close()
+    return imported, updated, skipped
+
+
+@app.get("/recipes", response_class=HTMLResponse)
+def saved_recipes_page(request: Request, imported: int = 0, updated: int = 0, skipped: int = 0):
+    with closing(db()) as conn:
+        rows = []
+        for row in conn.execute("SELECT id, name, pinned, created_at, source, recipe_json FROM saved_recipes ORDER BY pinned DESC, updated_at DESC"):
+            item = dict(row)
+            try:
+                item["image_url"] = json.loads(item.pop("recipe_json")).get("image_url", "")
+            except (json.JSONDecodeError, AttributeError):
+                item["image_url"] = ""
+            rows.append(item)
+    return render(request, "recipes.html", saved_recipes=rows, imported=imported, updated=updated, skipped=skipped)
+
+
+@app.get("/recipes/new", response_class=HTMLResponse)
+def new_recipe_page(request: Request):
+    return render(request, "recipe_form.html", form_title="Add recipe", action="/recipes/new", recipe={}, ingredients="", steps="")
+
+
+@app.post("/recipes/new")
+def create_recipe(name: str = Form(...), summary: str = Form(""), time_minutes: str = Form(""), servings: str = Form(""), ingredients: str = Form(...), steps: str = Form(...)):
+    recipe = recipe_form_payload(name, summary, time_minutes, servings, ingredients, steps)
+    if not recipe["name"] or not recipe["ingredients"] or not recipe["steps"]:
+        raise HTTPException(400, "Name, ingredients, and instructions are required")
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(db()) as conn:
+        cursor = conn.execute("INSERT INTO saved_recipes (name, recipe_json, pinned, source, created_at, updated_at) VALUES (?, ?, 1, 'manual', ?, ?)", (recipe["name"], json.dumps(recipe, ensure_ascii=False), now, now))
+        conn.commit()
+    return RedirectResponse(f"/recipes/{cursor.lastrowid}?saved=1", status_code=303)
+
+
+@app.post("/recipes/import")
+async def import_recipes(recipe_file: UploadFile = File(...)):
+    filename = recipe_file.filename or ""
+    if not filename.lower().endswith((".zip", ".json")):
+        raise HTTPException(400, "Choose an Outline JSON export or its ZIP file")
+    content = await recipe_file.read(80 * 1024 * 1024 + 1)
+    if len(content) > 80 * 1024 * 1024:
+        raise HTTPException(413, "Recipe export is larger than 80 MB")
+    try:
+        imported, updated, skipped = import_outline_export(content, filename)
+    except (ValueError, json.JSONDecodeError, zipfile.BadZipFile, KeyError) as exc:
+        raise HTTPException(400, f"Could not import this recipe export: {exc}") from exc
+    return RedirectResponse(f"/recipes?imported={imported}&updated={updated}&skipped={skipped}", status_code=303)
+
+
+@app.get("/recipes/{recipe_id}/edit", response_class=HTMLResponse)
+def edit_recipe_page(request: Request, recipe_id: int):
+    with closing(db()) as conn:
+        row = conn.execute("SELECT * FROM saved_recipes WHERE id=?", (recipe_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Saved recipe not found")
+    recipe = json.loads(row["recipe_json"])
+    ingredients = "\n".join(str(item.get("item", "")) for item in recipe.get("ingredients", []))
+    steps = "\n".join(str(step) for step in recipe.get("steps", []))
+    return render(request, "recipe_form.html", form_title="Edit recipe", action=f"/recipes/{recipe_id}/edit", recipe=recipe, ingredients=ingredients, steps=steps)
+
+
+@app.post("/recipes/{recipe_id}/edit")
+def edit_recipe(recipe_id: int, name: str = Form(...), summary: str = Form(""), time_minutes: str = Form(""), servings: str = Form(""), ingredients: str = Form(...), steps: str = Form(...)):
+    with closing(db()) as conn:
+        row = conn.execute("SELECT recipe_json FROM saved_recipes WHERE id=?", (recipe_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Saved recipe not found")
+        previous = json.loads(row["recipe_json"])
+        recipe = recipe_form_payload(name, summary, time_minutes, servings, ingredients, steps, previous.get("image_url", ""))
+        conn.execute("UPDATE saved_recipes SET name=?, recipe_json=?, updated_at=? WHERE id=?", (recipe["name"], json.dumps(recipe, ensure_ascii=False), datetime.now().isoformat(timespec="seconds"), recipe_id))
+        conn.commit()
+    return RedirectResponse(f"/recipes/{recipe_id}", status_code=303)
 
 
 @app.get("/recipes/{recipe_id}", response_class=HTMLResponse)

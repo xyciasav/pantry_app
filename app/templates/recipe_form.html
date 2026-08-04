@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ form_title }} · Shelf Life{% endblock %}
+{% block content %}
+<section class="recipe-form-shell"><a class="back" href="/recipes">← Back to recipes</a><div class="recipe-form-heading"><p class="eyebrow">YOUR COOKBOOK</p><h1>{{ form_title }}</h1><p>Put each ingredient and instruction on its own line.</p></div>
+  <form class="recipe-editor" method="post" action="{{ action }}">
+    <label class="wide"><span>Recipe name</span><input name="name" value="{{ recipe.name or '' }}" required></label>
+    <label class="wide"><span>Short description</span><textarea name="summary" rows="3">{{ recipe.summary or '' }}</textarea></label>
+    <label><span>Total minutes</span><input name="time_minutes" inputmode="numeric" value="{{ recipe.time_minutes or '' }}"></label><label><span>Servings</span><input name="servings" value="{{ recipe.servings or '' }}"></label>
+    <label class="wide"><span>Ingredients — one per line</span><textarea name="ingredients" rows="12" required>{{ ingredients }}</textarea></label><label class="wide"><span>Instructions — one step per line</span><textarea name="steps" rows="12" required>{{ steps }}</textarea></label>
+    <div class="wide recipe-form-actions"><button class="save-button" type="submit">Save recipe</button><a href="/recipes">Cancel</a></div>
+  </form>
+</section>
+{% endblock %}

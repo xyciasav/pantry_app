@@ -45,11 +45,11 @@ Changing the password or signing key immediately invalidates existing sessions. 
 
 ### Version and image name
 
-The default Docker image is named `shelf-life:1.11.0`, and the same version appears in the website header, footer, and `/health` response.
+The default Docker image is named `shelf-life:1.12.0`, and the same version appears in the website header, footer, and `/health` response.
 
 Portainer stack variables can override these values:
 
-- `PANTRY_VERSION=1.11.0` controls the Docker tag and displayed website version.
+- `PANTRY_VERSION=1.12.0` controls the Docker tag and displayed website version.
 - `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
 
 For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.
@@ -71,6 +71,11 @@ For each release, change `PANTRY_VERSION` to the new version before rebuilding t
 - A private What's for Dinner assistant that uses current inventory, expiry dates, and a saved household taste profile
 - A persistent, mobile-friendly Saved Recipes cookbook included in normal Shelf Life backups
 - A weekly meal-planning board with drag-and-drop cards, mobile move controls, cooked history, and repeat avoidance
+- A standalone recipe cookbook with manual add/edit and repeatable Outline JSON/ZIP imports, including recipe photos
+
+## Recipe imports
+
+Open **Recipes** and choose an Outline export ZIP or its `Recipes.json` file. The ZIP format is recommended because it also contains the uploaded recipe photos. Shelf Life recognizes ingredient and instruction sections, skips weekly meal-plan documents, and updates matching Outline recipes when the same export is imported again.
 
 ## Dinner Assistant
 
