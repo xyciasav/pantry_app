@@ -31,7 +31,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.10.1")
+APP_VERSION = os.getenv("APP_VERSION", "1.11.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -269,6 +269,18 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             )"""
         )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS meal_plan (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                planned_date TEXT NOT NULL,
+                recipe_id INTEGER REFERENCES saved_recipes(id) ON DELETE SET NULL,
+                recipe_name TEXT NOT NULL,
+                cooked_at TEXT,
+                position INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_meal_plan_date ON meal_plan(planned_date, position)")
         conn.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('shopping_mode', 'analysis')")
         conn.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('analysis_days', '7')")
         conn.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('analysis_started_at', ?)", (datetime.now().isoformat(timespec="seconds"),))
@@ -534,12 +546,14 @@ def call_dinner_llm(system: str, user_data: dict, temperature: float = 0.7, max_
         raise RuntimeError(f"The LLM response could not be read: {exc}") from exc
 
 
-def ask_dinner_picks(inventory: list[dict]) -> list[dict]:
+def ask_dinner_picks(inventory: list[dict], avoid_meals: list[str] | None = None) -> list[dict]:
     prompts = [
         "Use your configured household food profile and the supplied pantry inventory. Choose three distinct dinner ideas. "
+        "Do not suggest any meal named in the do_not_repeat list. "
         "Prefer opened and soon-expiring food. Do not write recipes. Return one JSON object with a meals array. "
         "Every meal must contain a real dish name and a one-sentence summary. Never return examples, instructions, placeholders, or ellipses.",
         "Create three actual dinner choices from this inventory now. Return only a JSON object containing a meals array; "
+        "Exclude every meal in do_not_repeat. "
         "each array entry must have the keys name and summary filled with real food content. No template text and no explanation.",
     ]
     last_error = "The LLM returned no usable dinner choices."
@@ -547,7 +561,7 @@ def ask_dinner_picks(inventory: list[dict]) -> list[dict]:
         try:
             result = call_dinner_llm(
                 prompt,
-                {"task": "choose_actual_dinners", "inventory": compact_dinner_inventory(inventory)},
+                {"task": "choose_actual_dinners", "do_not_repeat": avoid_meals or [], "inventory": compact_dinner_inventory(inventory)},
                 0.7 if attempt == 0 else 0.25, 800,
             )
         except RuntimeError as exc:
@@ -585,7 +599,7 @@ def ask_dinner_recipe(inventory: list[dict], meal_name: str) -> dict:
     return result
 
 
-def start_dinner_job(kind: str, inventory: list[dict], meal_name: str = "") -> str:
+def start_dinner_job(kind: str, inventory: list[dict], meal_name: str = "", avoid_meals: list[str] | None = None) -> str:
     now = time.time()
     job_id = secrets.token_urlsafe(18)
     with DINNER_JOBS_LOCK:
@@ -595,7 +609,7 @@ def start_dinner_job(kind: str, inventory: list[dict], meal_name: str = "") -> s
 
     def run_job() -> None:
         try:
-            result = ask_dinner_picks(inventory) if kind == "picks" else ask_dinner_recipe(inventory, meal_name)
+            result = ask_dinner_picks(inventory, avoid_meals) if kind == "picks" else ask_dinner_recipe(inventory, meal_name)
             error = ""
         except Exception as exc:
             result, error = None, str(exc) or "The dinner assistant could not complete this request."
@@ -1341,9 +1355,17 @@ def dinner_generate_get():
 def generate_dinner():
     with closing(db()) as conn:
         inventory = dinner_inventory(conn)
+        recent_cutoff = (date.today() - timedelta(days=14)).isoformat()
+        upcoming_cutoff = (date.today() + timedelta(days=7)).isoformat()
+        avoid_meals = [row[0] for row in conn.execute(
+            """SELECT DISTINCT recipe_name FROM meal_plan
+               WHERE (cooked_at IS NOT NULL AND substr(cooked_at,1,10) >= ?)
+                  OR (planned_date BETWEEN ? AND ?)""",
+            (recent_cutoff, date.today().isoformat(), upcoming_cutoff),
+        )]
     if not inventory:
         return JSONResponse({"detail": "Add some in-stock items before asking for dinner ideas."}, status_code=400)
-    job_id = start_dinner_job("picks", inventory)
+    job_id = start_dinner_job("picks", inventory, avoid_meals=avoid_meals)
     return {"job_id": job_id, "status_url": f"/dinner/jobs/{job_id}"}
 
 
@@ -1423,6 +1445,81 @@ def delete_saved_recipe(recipe_id: int):
         conn.execute("DELETE FROM saved_recipes WHERE id=?", (recipe_id,))
         conn.commit()
     return RedirectResponse("/recipes", status_code=303)
+
+
+def monday_for(value: str | None) -> date:
+    try:
+        selected = date.fromisoformat(value) if value else date.today()
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid week") from exc
+    return selected - timedelta(days=selected.weekday())
+
+
+@app.get("/meal-plan", response_class=HTMLResponse)
+def meal_plan_page(request: Request, week: str = ""):
+    week_start = monday_for(week)
+    week_end = week_start + timedelta(days=6)
+    with closing(db()) as conn:
+        entries = [dict(row) for row in conn.execute(
+            "SELECT * FROM meal_plan WHERE planned_date BETWEEN ? AND ? ORDER BY planned_date, position, id",
+            (week_start.isoformat(), week_end.isoformat()),
+        )]
+        recipes = [dict(row) for row in conn.execute("SELECT id, name FROM saved_recipes ORDER BY name")]
+    by_date: dict[str, list[dict]] = {}
+    for entry in entries:
+        by_date.setdefault(entry["planned_date"], []).append(entry)
+    days = []
+    for offset in range(7):
+        day = week_start + timedelta(days=offset)
+        days.append({"date": day.isoformat(), "weekday": day.strftime("%A"), "short": day.strftime("%b %d"), "today": day == date.today(), "entries": by_date.get(day.isoformat(), [])})
+    return render(request, "meal_plan.html", days=days, saved_recipes=recipes, week_start=week_start, week_end=week_end, previous_week=(week_start - timedelta(days=7)).isoformat(), next_week=(week_start + timedelta(days=7)).isoformat())
+
+
+@app.post("/meal-plan/add")
+def add_meal_plan(recipe_id: int = Form(...), planned_date: str = Form(...), return_week: str = Form("")):
+    planned_value = normalize_date(planned_date)
+    if not planned_value:
+        raise HTTPException(400, "Choose a meal date")
+    with closing(db()) as conn:
+        recipe = conn.execute("SELECT id, name FROM saved_recipes WHERE id=?", (recipe_id,)).fetchone()
+        if not recipe:
+            raise HTTPException(404, "Saved recipe not found")
+        position = conn.execute("SELECT COALESCE(MAX(position),-1)+1 FROM meal_plan WHERE planned_date=?", (planned_value,)).fetchone()[0]
+        conn.execute("INSERT INTO meal_plan (planned_date, recipe_id, recipe_name, position, created_at) VALUES (?, ?, ?, ?, ?)", (planned_value, recipe_id, recipe["name"], position, datetime.now().isoformat(timespec="seconds")))
+        conn.commit()
+    return RedirectResponse(f"/meal-plan?week={return_week or monday_for(planned_date).isoformat()}", status_code=303)
+
+
+@app.post("/meal-plan/{entry_id}/move")
+def move_meal_plan(entry_id: int, planned_date: str = Form(...), return_week: str = Form("")):
+    target = normalize_date(planned_date)
+    if not target:
+        raise HTTPException(400, "Choose a meal date")
+    with closing(db()) as conn:
+        position = conn.execute("SELECT COALESCE(MAX(position),-1)+1 FROM meal_plan WHERE planned_date=?", (target,)).fetchone()[0]
+        conn.execute("UPDATE meal_plan SET planned_date=?, position=? WHERE id=?", (target, position, entry_id))
+        conn.commit()
+    return RedirectResponse(f"/meal-plan?week={return_week or monday_for(target).isoformat()}", status_code=303)
+
+
+@app.post("/meal-plan/{entry_id}/cooked")
+def mark_meal_cooked(entry_id: int, return_week: str = Form("")):
+    with closing(db()) as conn:
+        row = conn.execute("SELECT cooked_at, planned_date FROM meal_plan WHERE id=?", (entry_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Planned meal not found")
+        cooked_at = None if row["cooked_at"] else datetime.now().isoformat(timespec="seconds")
+        conn.execute("UPDATE meal_plan SET cooked_at=? WHERE id=?", (cooked_at, entry_id))
+        conn.commit()
+    return RedirectResponse(f"/meal-plan?week={return_week or monday_for(row['planned_date']).isoformat()}", status_code=303)
+
+
+@app.post("/meal-plan/{entry_id}/delete")
+def delete_meal_plan(entry_id: int, return_week: str = Form("")):
+    with closing(db()) as conn:
+        conn.execute("DELETE FROM meal_plan WHERE id=?", (entry_id,))
+        conn.commit()
+    return RedirectResponse(f"/meal-plan?week={return_week or monday_for(None).isoformat()}", status_code=303)
 
 
 @app.get("/shopping", response_class=HTMLResponse)
