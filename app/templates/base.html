@@ -22,6 +22,7 @@
       <a class="secondary-button" href="/locations">Locations</a>
       <a class="shopping-button" href="/shopping" aria-label="Shopping list">🛒<span>Shopping{% if shopping_count %} <b>{{ shopping_count }}</b>{% endif %}</span></a>
       <a class="dinner-button" href="/dinner" aria-label="What's for Dinner?" title="What's for Dinner?">🍽<span>Dinner</span></a>
+      {% if prep_due_count %}<a class="prep-nav-button" href="/meal-plan#prep-reminders" aria-label="{{ prep_due_count }} meal prep reminder{% if prep_due_count != 1 %}s{% endif %}">⏰<span>Prep <b>{{ prep_due_count }}</b></span></a>{% endif %}
       <a class="scan-button" href="/scan">▣ Scan</a>
       <a class="add-button" href="/items/new"><span>＋</span> Add item</a>
       <form class="logout-form" method="post" action="/logout"><button aria-label="Log out" title="Log out">↪</button></form>
