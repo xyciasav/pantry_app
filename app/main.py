@@ -31,7 +31,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.10.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.10.1")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -416,14 +416,39 @@ def dinner_inventory(conn: sqlite3.Connection) -> list[dict]:
     return [{"name": row["name"], "category": row["category"], "unit": row["unit"], "total": row["total_quantity"], "open": row["opened_quantity"], "nearest_expiry": row["nearest_expiry"], "ingredients": row["ingredients"] or ""} for row in rows]
 
 
+def clean_meal_title(value: str) -> str:
+    title = re.sub(r"\s+", " ", value).strip().strip("*#- .")
+    lower = title.lower()
+    looks_like_ingredients = len(title) > 80 or title.count(",") >= 2 or "(yes)" in lower
+    if not looks_like_ingredients:
+        return title[:160]
+    if "ground beef" in lower and ("taco" in lower or "salsa" in lower):
+        return "Ground Beef Taco Bowls"
+    if "ground turkey" in lower and ("taco" in lower or "salsa" in lower):
+        return "Turkey Taco Bowls"
+    if "chicken" in lower and "teriyaki" in lower:
+        return "Teriyaki Chicken & Rice" if "rice" in lower else "Teriyaki Chicken"
+    if "chicken" in lower and ("spaghetti" in lower or "pasta" in lower) and ("cream" in lower or "mushroom" in lower):
+        return "Creamy Chicken Spaghetti" if "spaghetti" in lower else "Creamy Chicken Pasta"
+    if "chicken" in lower and "rice" in lower:
+        return "Chicken & Rice"
+    if "ground beef" in lower and ("spaghetti" in lower or "pasta" in lower):
+        return "Ground Beef Pasta"
+    if "pork" in lower and "potato" in lower:
+        return "Pork Chops & Potatoes"
+    protein = next((label for key, label in (("chicken", "Chicken"), ("ground beef", "Ground Beef"), ("ground turkey", "Turkey"), ("pork", "Pork")) if key in lower), "Pantry")
+    base = next((label for key, label in (("rice", "Rice"), ("spaghetti", "Spaghetti"), ("pasta", "Pasta"), ("potato", "Potatoes"), ("bean", "Bean Skillet")) if key in lower), "Dinner")
+    return f"{protein} & {base}" if base != "Dinner" else f"{protein} Dinner"
+
+
 def extract_meals_from_prose(content: str) -> dict | None:
-    headings = list(re.finditer(r"(?im)^(?:Dinner\s+(?:Idea|Option)|Meal)\s*#?\d+\s*:\s*(.+?)\s*$", content))
+    headings = list(re.finditer(r"(?im)^(?:Dinner\s+(?:Idea|Option)|Meal)\s*#?\d+[ \t]*:[ \t]*([^\r\n]+?)[ \t]*$", content))
     meals = []
     for index, heading in enumerate(headings[:3]):
-        name = heading.group(1).strip().strip("*#- ")
+        name = clean_meal_title(heading.group(1))
         segment_end = headings[index + 1].start() if index + 1 < len(headings) else len(content)
         segment = content[heading.end():segment_end]
-        summary_match = re.search(r"(?im)^\s*(?:-\s*)?Summary\s*:\s*(.+?)\s*$", segment)
+        summary_match = re.search(r"(?im)^[ \t]*(?:-[ \t]*)?Summary[ \t]*:[ \t]*([^\r\n]+?)[ \t]*$", segment)
         summary = summary_match.group(1).strip() if summary_match else "Selected from your current inventory."
         if name and name not in {"...", "[name]"}:
             meals.append({"name": name[:160], "summary": summary[:300]})
@@ -536,7 +561,7 @@ def ask_dinner_picks(inventory: list[dict]) -> list[dict]:
             for meal in meals[:3]:
                 if not isinstance(meal, dict):
                     continue
-                name = str(meal.get("name", "")).strip()
+                name = clean_meal_title(str(meal.get("name", "")))
                 summary = str(meal.get("summary", "")).strip()
                 if name and name != "..." and "placeholder" not in name.lower():
                     picks.append({"name": name[:160], "summary": summary[:300]})
