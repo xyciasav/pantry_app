@@ -31,7 +31,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.12.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.13.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -267,6 +267,15 @@ def init_db() -> None:
                 outline_id TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS shopping_extras (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                reason TEXT NOT NULL DEFAULT '',
+                recipe_id INTEGER REFERENCES saved_recipes(id) ON DELETE SET NULL,
+                added_at TEXT NOT NULL
             )"""
         )
         conn.execute(
@@ -730,7 +739,7 @@ def render(request: Request, name: str, **context) -> HTMLResponse:
     template = templates.get_template(name)
     generic_images = [{"url": f"/static/items/{path.name}", "label": path.stem.replace("-", " ").title()} for path in sorted((BASE_DIR / "static" / "items").glob("*.webp"))]
     with closing(db()) as conn:
-        shopping_count = conn.execute("SELECT COUNT(*) FROM shopping_list").fetchone()[0]
+        shopping_count = conn.execute("SELECT (SELECT COUNT(*) FROM shopping_list) + (SELECT COUNT(*) FROM shopping_extras)").fetchone()[0]
     return HTMLResponse(template.render(request=request, categories=CATEGORIES, locations=get_locations(), generic_images=generic_images, shopping_count=shopping_count, app_version=APP_VERSION, **context))
 
 
@@ -1566,18 +1575,115 @@ def import_outline_export(content: bytes, filename: str) -> tuple[int, int, int]
     return imported, updated, skipped
 
 
+INGREDIENT_UNITS = {
+    "cup", "cups", "tbsp", "tablespoon", "tablespoons", "tsp", "teaspoon", "teaspoons", "oz", "ounce", "ounces",
+    "lb", "lbs", "pound", "pounds", "g", "kg", "ml", "l", "can", "cans", "package", "packages", "bag", "bags",
+    "jar", "jars", "bottle", "bottles", "clove", "cloves", "slice", "slices", "small", "medium", "large",
+}
+INGREDIENT_QUALIFIERS = {"soup", "sauce", "broth", "stock", "paste", "powder", "seasoning", "cheese", "cream", "flour", "oil", "vinegar"}
+
+
+def normalized_ingredient_name(value: str) -> str:
+    value = re.sub(r"\([^)]*\)", " ", value.lower()).split(",", 1)[0]
+    words = re.findall(r"[a-z]+", value)
+    while words and (words[0] in INGREDIENT_UNITS or re.fullmatch(r"(?:one|two|three|four|five|six|half|quarter)", words[0])):
+        words.pop(0)
+    words = [word for word in words if word not in INGREDIENT_UNITS and word not in {"of", "to", "taste", "optional", "fresh", "diced", "chopped", "minced", "shredded"}]
+    irregular = {"tomatoes": "tomato", "potatoes": "potato", "loaves": "loaf", "cloves": "clove"}
+    words = [irregular.get(word, word[:-3] + "y" if word.endswith("ies") else word[:-1] if word.endswith("s") and not word.endswith("ss") else word) for word in words]
+    return " ".join(words).strip()
+
+
+def recipe_inventory_catalog(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        """SELECT items.id, items.name, product_groups.name AS group_name,
+                  COALESCE(SUM(item_stocks.quantity),0) AS total_quantity
+           FROM items LEFT JOIN item_stocks ON item_stocks.item_id=items.id
+           LEFT JOIN product_groups ON product_groups.id=items.group_id
+           GROUP BY items.id ORDER BY total_quantity DESC"""
+    ).fetchall()
+    catalog = []
+    for row in rows:
+        names = [row["name"]]
+        if row["group_name"]:
+            names.append(row["group_name"])
+        catalog.append({"id": row["id"], "name": row["name"], "quantity": row["total_quantity"], "keys": [normalized_ingredient_name(name) for name in names]})
+    return catalog
+
+
+def ingredient_inventory_match(ingredient: str, catalog: list[dict]) -> dict | None:
+    wanted = normalized_ingredient_name(ingredient)
+    if not wanted:
+        return None
+    wanted_words = set(wanted.split())
+    wanted_qualifiers = wanted_words & INGREDIENT_QUALIFIERS
+    best = None
+    best_score = 0.0
+    for item in catalog:
+        for key in item["keys"]:
+            if not key:
+                continue
+            key_words = set(key.split())
+            key_qualifiers = key_words & INGREDIENT_QUALIFIERS
+            if wanted_qualifiers and not wanted_qualifiers.issubset(key_words):
+                continue
+            exact_phrase = wanted in key or key in wanted
+            overlap = len(wanted_words & key_words)
+            score = 1.0 if exact_phrase else overlap / max(1, min(len(wanted_words), len(key_words)))
+            if key_qualifiers and not key_qualifiers.issubset(wanted_words):
+                score *= 0.5
+            if overlap and score > best_score and (exact_phrase or score >= 0.67):
+                best, best_score = item, score
+    return best
+
+
+def inventory_aware_recipe(recipe: dict, catalog: list[dict]) -> dict:
+    analyzed = dict(recipe)
+    ingredient_rows = []
+    missing = []
+    for raw in recipe.get("ingredients", []):
+        row = dict(raw) if isinstance(raw, dict) else {"item": str(raw), "amount": ""}
+        ingredient_text = " ".join(part for part in (str(row.get("amount", "")).strip(), str(row.get("item", "")).strip()) if part)
+        match = ingredient_inventory_match(ingredient_text, catalog)
+        row["have"] = bool(match and match["quantity"] > 0)
+        row["inventory_item_id"] = match["id"] if match else None
+        row["inventory_name"] = match["name"] if match else ""
+        ingredient_rows.append(row)
+        if not row["have"]:
+            missing.append({"name": normalized_ingredient_name(ingredient_text).title() or ingredient_text, "item_id": match["id"] if match else None})
+    unique_missing = []
+    seen = set()
+    for item in missing:
+        key = item["name"].lower()
+        if key not in seen:
+            seen.add(key)
+            unique_missing.append(item)
+    analyzed["ingredients"] = ingredient_rows
+    analyzed["inventory_missing"] = unique_missing
+    analyzed["missing_items"] = [item["name"] for item in unique_missing]
+    analyzed["cookable"] = not unique_missing
+    return analyzed
+
+
 @app.get("/recipes", response_class=HTMLResponse)
 def saved_recipes_page(request: Request, imported: int = 0, updated: int = 0, skipped: int = 0):
     with closing(db()) as conn:
+        catalog = recipe_inventory_catalog(conn)
         rows = []
         for row in conn.execute("SELECT id, name, pinned, created_at, source, recipe_json FROM saved_recipes ORDER BY pinned DESC, updated_at DESC"):
             item = dict(row)
             try:
-                item["image_url"] = json.loads(item.pop("recipe_json")).get("image_url", "")
+                analyzed = inventory_aware_recipe(json.loads(item.pop("recipe_json")), catalog)
+                item["image_url"] = analyzed.get("image_url", "")
+                item["missing"] = analyzed["inventory_missing"]
+                item["cookable"] = analyzed["cookable"]
             except (json.JSONDecodeError, AttributeError):
                 item["image_url"] = ""
+                item["missing"] = []
+                item["cookable"] = False
             rows.append(item)
-    return render(request, "recipes.html", saved_recipes=rows, imported=imported, updated=updated, skipped=skipped)
+    unlock_recipes = sorted((row for row in rows if 0 < len(row["missing"]) <= 2), key=lambda row: (len(row["missing"]), row["name"].lower()))[:8]
+    return render(request, "recipes.html", saved_recipes=rows, unlock_recipes=unlock_recipes, imported=imported, updated=updated, skipped=skipped)
 
 
 @app.get("/recipes/new", response_class=HTMLResponse)
@@ -1641,13 +1747,40 @@ def edit_recipe(recipe_id: int, name: str = Form(...), summary: str = Form(""), 
 def saved_recipe_detail(request: Request, recipe_id: int, saved: str = ""):
     with closing(db()) as conn:
         row = conn.execute("SELECT * FROM saved_recipes WHERE id=?", (recipe_id,)).fetchone()
+        catalog = recipe_inventory_catalog(conn)
     if not row:
         raise HTTPException(404, "Saved recipe not found")
     try:
-        recipe = json.loads(row["recipe_json"])
+        recipe = inventory_aware_recipe(json.loads(row["recipe_json"]), catalog)
     except json.JSONDecodeError as exc:
         raise HTTPException(500, "This saved recipe could not be read") from exc
     return render(request, "recipe.html", recipe=recipe, meal_name=row["name"], error="", job_id=None, saved=bool(saved), recipe_id=recipe_id)
+
+
+@app.post("/recipes/{recipe_id}/shop-missing")
+def shop_for_recipe(recipe_id: int, return_to: str = Form("/recipes")):
+    with closing(db()) as conn:
+        row = conn.execute("SELECT name, recipe_json FROM saved_recipes WHERE id=?", (recipe_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Saved recipe not found")
+        recipe = inventory_aware_recipe(json.loads(row["recipe_json"]), recipe_inventory_catalog(conn))
+        now = datetime.now().isoformat(timespec="seconds")
+        for missing in recipe["inventory_missing"]:
+            reason = f"Needed for {row['name']}"
+            if missing["item_id"]:
+                conn.execute(
+                    """INSERT INTO shopping_list (item_id, reason, automatic, added_at) VALUES (?, ?, 0, ?)
+                       ON CONFLICT(item_id) DO UPDATE SET reason=excluded.reason, automatic=0""",
+                    (missing["item_id"], reason, now),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO shopping_extras (name, reason, recipe_id, added_at) VALUES (?, ?, ?, ?)
+                       ON CONFLICT(name) DO UPDATE SET reason=excluded.reason, recipe_id=excluded.recipe_id""",
+                    (missing["name"], reason, recipe_id, now),
+                )
+        conn.commit()
+    return RedirectResponse(safe_return_path(return_to, "/recipes"), status_code=303)
 
 
 @app.post("/recipes/{recipe_id}/delete")
@@ -1752,6 +1885,7 @@ def shopping_page(request: Request):
             item.update(reason=row["reason"], automatic=bool(row["automatic"]), added_at=row["added_at"])
             listed.append(item)
             listed_ids.add(item["id"])
+        extras = [dict(row) for row in conn.execute("SELECT * FROM shopping_extras ORDER BY added_at DESC")]
         inventory_rows = conn.execute(
             """SELECT items.*, COALESCE(SUM(item_stocks.quantity),0) AS total_quantity,
                       COALESCE(SUM(item_stocks.opened),0) AS opened_quantity
@@ -1768,7 +1902,15 @@ def shopping_page(request: Request):
             elif analysis["confidence"] == "learning":
                 learning.append(item)
     recommendations.sort(key=lambda item: (item["unopened_quantity"], item["name"].lower()))
-    return render(request, "shopping.html", listed=listed, recommendations=recommendations, learning_count=len(learning), shop_settings=settings)
+    return render(request, "shopping.html", listed=listed, extras=extras, recommendations=recommendations, learning_count=len(learning), shop_settings=settings)
+
+
+@app.post("/shopping/extras/{extra_id}/remove")
+def remove_shopping_extra(extra_id: int):
+    with closing(db()) as conn:
+        conn.execute("DELETE FROM shopping_extras WHERE id=?", (extra_id,))
+        conn.commit()
+    return RedirectResponse("/shopping", status_code=303)
 
 
 @app.post("/shopping/{item_id}/add")
