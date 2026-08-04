@@ -6,6 +6,7 @@
     <label class="wide"><span>Recipe name</span><input name="name" value="{{ recipe.name or '' }}" required></label>
     <label class="wide"><span>Short description</span><textarea name="summary" rows="3">{{ recipe.summary or '' }}</textarea></label>
     <label><span>Total minutes</span><input name="time_minutes" inputmode="numeric" value="{{ recipe.time_minutes or '' }}"></label><label><span>Servings</span><input name="servings" value="{{ recipe.servings or '' }}"></label>
+    <label><span>Meal style</span><select name="meal_type"><option value="">Let Shelf Life guess</option>{% for value, label in recipe_types.items() %}<option value="{{ value }}" {{ 'selected' if recipe.meal_type == value else '' }}>{{ label }}</option>{% endfor %}</select><small>Side dishes and desserts are excluded from automatic dinner planning.</small></label><label><span>Main protein</span><select name="protein"><option value="">Let Shelf Life guess</option>{% for value, label in recipe_proteins.items() %}<option value="{{ value }}" {{ 'selected' if recipe.protein == value else '' }}>{{ label }}</option>{% endfor %}</select></label>
     <label class="wide"><span>Ingredients — one per line</span><textarea name="ingredients" rows="12" required>{{ ingredients }}</textarea></label><label class="wide"><span>Instructions — one step per line</span><textarea name="steps" rows="12" required>{{ steps }}</textarea></label>
     <div class="wide recipe-form-actions"><button class="save-button" type="submit">Save recipe</button><a href="/recipes">Cancel</a></div>
   </form>

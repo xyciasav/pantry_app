@@ -45,11 +45,11 @@ Changing the password or signing key immediately invalidates existing sessions. 
 
 ### Version and image name
 
-The default Docker image is named `shelf-life:1.13.0`, and the same version appears in the website header, footer, and `/health` response.
+The default Docker image is named `shelf-life:1.14.0`, and the same version appears in the website header, footer, and `/health` response.
 
 Portainer stack variables can override these values:
 
-- `PANTRY_VERSION=1.13.0` controls the Docker tag and displayed website version.
+- `PANTRY_VERSION=1.14.0` controls the Docker tag and displayed website version.
 - `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
 
 For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.
@@ -73,6 +73,7 @@ For each release, change `PANTRY_VERSION` to the new version before rebuilding t
 - A weekly meal-planning board with drag-and-drop cards, mobile move controls, cooked history, and repeat avoidance
 - A standalone recipe cookbook with manual add/edit and repeatable Outline JSON/ZIP imports, including recipe photos
 - Inventory-aware recipes that show missing ingredients and suggest meals unlocked by buying one or two items
+- Recipe meal-style and protein labels with a balanced weekly planner that preserves existing choices
 
 ## Recipe imports
 

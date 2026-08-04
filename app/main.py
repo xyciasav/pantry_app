@@ -31,7 +31,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.13.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.14.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -1428,7 +1428,15 @@ def save_recipe(job_id: str = Form(...)):
     return RedirectResponse(f"/recipes/{recipe_id}?saved=1", status_code=303)
 
 
-def recipe_form_payload(name: str, summary: str, time_minutes: str, servings: str, ingredients: str, steps: str, image_url: str = "") -> dict:
+RECIPE_TYPES = {
+    "main": "Complete meal", "meat-side": "Meat & side", "pasta": "Pasta", "salad": "Salad",
+    "soup": "Soup or stew", "sandwich": "Sandwich or handheld", "breakfast": "Breakfast",
+    "side": "Side or snack", "dessert": "Dessert",
+}
+RECIPE_PROTEINS = {"none": "No main protein", "chicken": "Chicken", "beef": "Beef", "pork": "Pork", "turkey": "Turkey", "seafood": "Seafood", "vegetarian": "Vegetarian", "mixed": "Mixed"}
+
+
+def recipe_form_payload(name: str, summary: str, time_minutes: str, servings: str, ingredients: str, steps: str, image_url: str = "", meal_type: str = "", protein: str = "") -> dict:
     ingredient_rows = [line.strip() for line in ingredients.splitlines() if line.strip()]
     step_rows = [re.sub(r"^\s*\d+[.)]\s*", "", line).strip() for line in steps.splitlines() if line.strip()]
     return {
@@ -1440,7 +1448,26 @@ def recipe_form_payload(name: str, summary: str, time_minutes: str, servings: st
         "steps": step_rows,
         "missing_items": [],
         "image_url": image_url,
+        "meal_type": meal_type if meal_type in RECIPE_TYPES else "",
+        "protein": protein if protein in RECIPE_PROTEINS else "",
     }
+
+
+def recipe_labels(recipe: dict) -> dict:
+    text = f"{recipe.get('name', '')} " + " ".join(str(row.get('item', '')) if isinstance(row, dict) else str(row) for row in recipe.get("ingredients", []))
+    lower = text.lower()
+    meal_type = recipe.get("meal_type")
+    if meal_type not in RECIPE_TYPES:
+        meal_type = next((kind for kind, words in (
+            ("salad", ("salad",)), ("soup", ("soup", "stew", "chowder")), ("pasta", ("pasta", "spaghetti", "macaroni", "lasagna", "noodle")),
+            ("sandwich", ("sandwich", "burger", "sloppy joe", "hot dog", "corn dog", "slider", "taco", "wrap")),
+            ("breakfast", ("breakfast", "pancake", "waffle", "frittata", "omelet")), ("dessert", ("cake", "cookie", "fudge", "tart", "dessert")),
+            ("side", ("french fries", "fries", "side dish", "dip")), ("meat-side", ("steak", "chop", "roast",)),
+        ) if any(word in lower for word in words)), "main")
+    protein = recipe.get("protein")
+    if protein not in RECIPE_PROTEINS:
+        protein = next((kind for kind, words in (("chicken", ("chicken",)), ("turkey", ("turkey",)), ("beef", ("beef", "steak")), ("pork", ("pork", "ham", "bacon")), ("seafood", ("fish", "salmon", "shrimp", "tuna"))) if any(word in lower for word in words)), "vegetarian")
+    return {"meal_type": meal_type, "meal_type_label": RECIPE_TYPES[meal_type], "protein": protein, "protein_label": RECIPE_PROTEINS[protein]}
 
 
 def outline_text(node: dict) -> str:
@@ -1559,11 +1586,14 @@ def import_outline_export(content: bytes, filename: str) -> tuple[int, int, int]
             outline_id = str(document.get("id") or document_id)
             existing = conn.execute("SELECT id, recipe_json FROM saved_recipes WHERE outline_id=?", (outline_id,)).fetchone()
             if existing:
-                if not recipe.get("image_url"):
-                    try:
-                        recipe["image_url"] = json.loads(existing["recipe_json"]).get("image_url", "")
-                    except (json.JSONDecodeError, AttributeError):
-                        pass
+                try:
+                    previous_recipe = json.loads(existing["recipe_json"])
+                    if not recipe.get("image_url"):
+                        recipe["image_url"] = previous_recipe.get("image_url", "")
+                    recipe["meal_type"] = previous_recipe.get("meal_type", "")
+                    recipe["protein"] = previous_recipe.get("protein", "")
+                except (json.JSONDecodeError, AttributeError):
+                    pass
                 conn.execute("UPDATE saved_recipes SET name=?, recipe_json=?, source='outline-import', updated_at=? WHERE id=?", (recipe["name"], json.dumps(recipe, ensure_ascii=False), now, existing["id"]))
                 updated += 1
             else:
@@ -1677,6 +1707,7 @@ def saved_recipes_page(request: Request, imported: int = 0, updated: int = 0, sk
                 item["image_url"] = analyzed.get("image_url", "")
                 item["missing"] = analyzed["inventory_missing"]
                 item["cookable"] = analyzed["cookable"]
+                item.update(recipe_labels(analyzed))
             except (json.JSONDecodeError, AttributeError):
                 item["image_url"] = ""
                 item["missing"] = []
@@ -1688,12 +1719,12 @@ def saved_recipes_page(request: Request, imported: int = 0, updated: int = 0, sk
 
 @app.get("/recipes/new", response_class=HTMLResponse)
 def new_recipe_page(request: Request):
-    return render(request, "recipe_form.html", form_title="Add recipe", action="/recipes/new", recipe={}, ingredients="", steps="")
+    return render(request, "recipe_form.html", form_title="Add recipe", action="/recipes/new", recipe={}, ingredients="", steps="", recipe_types=RECIPE_TYPES, recipe_proteins=RECIPE_PROTEINS)
 
 
 @app.post("/recipes/new")
-def create_recipe(name: str = Form(...), summary: str = Form(""), time_minutes: str = Form(""), servings: str = Form(""), ingredients: str = Form(...), steps: str = Form(...)):
-    recipe = recipe_form_payload(name, summary, time_minutes, servings, ingredients, steps)
+def create_recipe(name: str = Form(...), summary: str = Form(""), time_minutes: str = Form(""), servings: str = Form(""), meal_type: str = Form(""), protein: str = Form(""), ingredients: str = Form(...), steps: str = Form(...)):
+    recipe = recipe_form_payload(name, summary, time_minutes, servings, ingredients, steps, meal_type=meal_type, protein=protein)
     if not recipe["name"] or not recipe["ingredients"] or not recipe["steps"]:
         raise HTTPException(400, "Name, ingredients, and instructions are required")
     now = datetime.now().isoformat(timespec="seconds")
@@ -1727,17 +1758,17 @@ def edit_recipe_page(request: Request, recipe_id: int):
     recipe = json.loads(row["recipe_json"])
     ingredients = "\n".join(str(item.get("item", "")) for item in recipe.get("ingredients", []))
     steps = "\n".join(str(step) for step in recipe.get("steps", []))
-    return render(request, "recipe_form.html", form_title="Edit recipe", action=f"/recipes/{recipe_id}/edit", recipe=recipe, ingredients=ingredients, steps=steps)
+    return render(request, "recipe_form.html", form_title="Edit recipe", action=f"/recipes/{recipe_id}/edit", recipe=recipe, ingredients=ingredients, steps=steps, recipe_types=RECIPE_TYPES, recipe_proteins=RECIPE_PROTEINS)
 
 
 @app.post("/recipes/{recipe_id}/edit")
-def edit_recipe(recipe_id: int, name: str = Form(...), summary: str = Form(""), time_minutes: str = Form(""), servings: str = Form(""), ingredients: str = Form(...), steps: str = Form(...)):
+def edit_recipe(recipe_id: int, name: str = Form(...), summary: str = Form(""), time_minutes: str = Form(""), servings: str = Form(""), meal_type: str = Form(""), protein: str = Form(""), ingredients: str = Form(...), steps: str = Form(...)):
     with closing(db()) as conn:
         row = conn.execute("SELECT recipe_json FROM saved_recipes WHERE id=?", (recipe_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Saved recipe not found")
         previous = json.loads(row["recipe_json"])
-        recipe = recipe_form_payload(name, summary, time_minutes, servings, ingredients, steps, previous.get("image_url", ""))
+        recipe = recipe_form_payload(name, summary, time_minutes, servings, ingredients, steps, previous.get("image_url", ""), meal_type, protein)
         conn.execute("UPDATE saved_recipes SET name=?, recipe_json=?, updated_at=? WHERE id=?", (recipe["name"], json.dumps(recipe, ensure_ascii=False), datetime.now().isoformat(timespec="seconds"), recipe_id))
         conn.commit()
     return RedirectResponse(f"/recipes/{recipe_id}", status_code=303)
@@ -1752,6 +1783,7 @@ def saved_recipe_detail(request: Request, recipe_id: int, saved: str = ""):
         raise HTTPException(404, "Saved recipe not found")
     try:
         recipe = inventory_aware_recipe(json.loads(row["recipe_json"]), catalog)
+        recipe.update(recipe_labels(recipe))
     except json.JSONDecodeError as exc:
         raise HTTPException(500, "This saved recipe could not be read") from exc
     return render(request, "recipe.html", recipe=recipe, meal_name=row["name"], error="", job_id=None, saved=bool(saved), recipe_id=recipe_id)
@@ -1808,7 +1840,19 @@ def meal_plan_page(request: Request, week: str = ""):
             "SELECT * FROM meal_plan WHERE planned_date BETWEEN ? AND ? ORDER BY planned_date, position, id",
             (week_start.isoformat(), week_end.isoformat()),
         )]
-        recipes = [dict(row) for row in conn.execute("SELECT id, name FROM saved_recipes ORDER BY name")]
+        recipes = []
+        recipe_labels_by_id = {}
+        for row in conn.execute("SELECT id, name, recipe_json FROM saved_recipes ORDER BY name"):
+            recipe = dict(row)
+            try:
+                labels = recipe_labels(json.loads(recipe.pop("recipe_json")))
+            except json.JSONDecodeError:
+                labels = recipe_labels({"name": recipe["name"], "ingredients": []})
+            recipe.update(labels)
+            recipe_labels_by_id[recipe["id"]] = labels
+            recipes.append(recipe)
+    for entry in entries:
+        entry.update(recipe_labels_by_id.get(entry["recipe_id"], {}))
     by_date: dict[str, list[dict]] = {}
     for entry in entries:
         by_date.setdefault(entry["planned_date"], []).append(entry)
@@ -1817,6 +1861,59 @@ def meal_plan_page(request: Request, week: str = ""):
         day = week_start + timedelta(days=offset)
         days.append({"date": day.isoformat(), "weekday": day.strftime("%A"), "short": day.strftime("%b %d"), "today": day == date.today(), "entries": by_date.get(day.isoformat(), [])})
     return render(request, "meal_plan.html", days=days, saved_recipes=recipes, week_start=week_start, week_end=week_end, previous_week=(week_start - timedelta(days=7)).isoformat(), next_week=(week_start + timedelta(days=7)).isoformat())
+
+
+@app.post("/meal-plan/balance")
+def balance_meal_plan(week: str = Form("")):
+    week_start = monday_for(week)
+    week_end = week_start + timedelta(days=6)
+    with closing(db()) as conn:
+        occupied = set()
+        scheduled_by_date = {}
+        for row in conn.execute("""SELECT meal_plan.planned_date, saved_recipes.recipe_json FROM meal_plan
+                                   LEFT JOIN saved_recipes ON saved_recipes.id=meal_plan.recipe_id
+                                   WHERE meal_plan.planned_date BETWEEN ? AND ? ORDER BY meal_plan.position""", (week_start.isoformat(), week_end.isoformat())):
+            occupied.add(row["planned_date"])
+            if row["recipe_json"] and row["planned_date"] not in scheduled_by_date:
+                try:
+                    scheduled_by_date[row["planned_date"]] = recipe_labels(json.loads(row["recipe_json"]))
+                except json.JSONDecodeError:
+                    pass
+        recent_names = {row[0].lower() for row in conn.execute("SELECT DISTINCT recipe_name FROM meal_plan WHERE cooked_at IS NOT NULL AND substr(cooked_at,1,10)>=?", ((week_start - timedelta(days=14)).isoformat(),))}
+        existing_ids = {row[0] for row in conn.execute("SELECT recipe_id FROM meal_plan WHERE planned_date BETWEEN ? AND ? AND recipe_id IS NOT NULL", (week_start.isoformat(), week_end.isoformat()))}
+        catalog = recipe_inventory_catalog(conn)
+        candidates = []
+        for row in conn.execute("SELECT id, name, recipe_json FROM saved_recipes"):
+            try:
+                analyzed = inventory_aware_recipe(json.loads(row["recipe_json"]), catalog)
+            except json.JSONDecodeError:
+                continue
+            labels = recipe_labels(analyzed)
+            if row["id"] in existing_ids or row["name"].lower() in recent_names or labels["meal_type"] in {"side", "dessert"}:
+                continue
+            candidates.append({"id": row["id"], "name": row["name"], "missing": len(analyzed["inventory_missing"]), **labels})
+        chosen = []
+        type_counts: dict[str, int] = {}
+        protein_counts: dict[str, int] = {}
+        for offset in range(7):
+            planned_date = (week_start + timedelta(days=offset)).isoformat()
+            if planned_date in occupied or not candidates:
+                continue
+            previous = scheduled_by_date.get((week_start + timedelta(days=offset - 1)).isoformat()) if offset else None
+            def score(recipe: dict) -> tuple:
+                repeat_type = 100 if previous and previous["meal_type"] == recipe["meal_type"] else 0
+                repeat_protein = 70 if previous and previous["protein"] == recipe["protein"] and recipe["protein"] not in {"none", "vegetarian"} else 0
+                return (recipe["missing"] * 25 + repeat_type + repeat_protein + type_counts.get(recipe["meal_type"], 0) * 20 + protein_counts.get(recipe["protein"], 0) * 12, recipe["name"].lower())
+            selected = min(candidates, key=score)
+            position = conn.execute("SELECT COALESCE(MAX(position),-1)+1 FROM meal_plan WHERE planned_date=?", (planned_date,)).fetchone()[0]
+            conn.execute("INSERT INTO meal_plan (planned_date, recipe_id, recipe_name, position, created_at) VALUES (?, ?, ?, ?, ?)", (planned_date, selected["id"], selected["name"], position, datetime.now().isoformat(timespec="seconds")))
+            chosen.append(selected)
+            scheduled_by_date[planned_date] = selected
+            type_counts[selected["meal_type"]] = type_counts.get(selected["meal_type"], 0) + 1
+            protein_counts[selected["protein"]] = protein_counts.get(selected["protein"], 0) + 1
+            candidates.remove(selected)
+        conn.commit()
+    return RedirectResponse(f"/meal-plan?week={week_start.isoformat()}&balanced={len(chosen)}", status_code=303)
 
 
 @app.post("/meal-plan/add")
