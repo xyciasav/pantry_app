@@ -15,7 +15,7 @@
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/"><span class="brand-mark">S</span><span>Shelf Life <b class="version-badge">v{{ app_version }}</b><small>Pantry & fridge</small></span></a>
+    <a class="brand" href="/"><img class="brand-mark" src="/static/app-icon.svg" alt="Shelf Life"><span>Shelf Life <b class="version-badge">v{{ app_version }}</b><small>Pantry & fridge</small></span></a>
     <nav class="top-actions">
       {% if request.url.path == '/inventory' %}<a class="list-button" href="/" aria-label="Card grid" title="Card grid">▦<span>Grid</span></a>{% else %}<a class="list-button" href="/inventory" aria-label="Inventory list" title="Inventory list">☷<span>List</span></a>{% endif %}
       <a class="manage-button" href="/manage" aria-label="Manage Shelf Life" title="Manage">⚙<span>Manage</span></a>
