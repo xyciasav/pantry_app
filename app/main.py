@@ -31,7 +31,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.17.2")
+APP_VERSION = os.getenv("APP_VERSION", "1.17.3")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -1823,11 +1823,11 @@ PANTRY_STAPLES = {"water", "tap water"}
 
 
 def normalized_ingredient_name(value: str) -> str:
-    value = re.sub(r"\([^)]*\)", " ", value.lower()).split(",", 1)[0]
+    value = re.sub(r"\([^)]*\)", " ", value.lower())
     words = re.findall(r"[a-z]+", value)
     while words and (words[0] in INGREDIENT_UNITS or re.fullmatch(r"(?:one|two|three|four|five|six|half|quarter)", words[0])):
         words.pop(0)
-    words = [word for word in words if word not in INGREDIENT_UNITS and word not in {"of", "to", "taste", "optional", "fresh", "diced", "chopped", "minced", "shredded"}]
+    words = [word for word in words if word not in INGREDIENT_UNITS and word not in {"and", "of", "to", "taste", "optional", "fresh", "diced", "chopped", "minced", "shredded", "drained", "rinsed", "divided", "softened", "melted", "peeled", "seeded", "sliced", "crushed"}]
     irregular = {"tomatoes": "tomato", "potatoes": "potato", "loaves": "loaf", "cloves": "clove"}
     words = [irregular.get(word, word[:-3] + "y" if word.endswith("ies") else word[:-1] if word.endswith("s") and not word.endswith("ss") else word) for word in words]
     return " ".join(words).strip()
