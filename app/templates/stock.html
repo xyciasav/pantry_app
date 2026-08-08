@@ -3,30 +3,37 @@
 {% block content %}
 <section class="form-shell stock-shell">
   <a class="back" href="{{ return_to }}">← Back</a>
-  <div class="form-heading stock-heading"><div><p class="eyebrow">DATED STOCK BATCHES</p><h1>{{ item.name }}</h1><p>Keep each purchase separate so older and newer packages can have different dates.</p></div><a class="save-button" href="#add-purchase">＋ Add new purchase</a></div>
+  <div class="form-heading stock-heading"><div><p class="eyebrow">DATED STOCK BATCHES</p><h1>{{ item.name }}</h1><p>Edit each purchase independently. Add a new purchase only when you actually have another dated lot.</p></div><a class="save-button" href="#add-purchase">＋ Add new purchase</a></div>
 
-  <form method="post" action="/items/{{ item.id }}/batches/save"><input type="hidden" name="return_to" value="{{ return_to }}"><div class="batch-list">
-    {% for batch in batches %}
-    <div class="batch-card">
-      <label class="field"><span>Location</span><select name="location_{{ batch.id }}">{% for location in locations %}<option value="{{ location.id }}"{% if location.id == batch.location_id %} selected{% endif %}>{{ location.name }}</option>{% endfor %}</select></label>
-      <label class="field"><span>Total</span><input type="number" min="0" step="0.25" name="quantity_{{ batch.id }}" value="{{ batch.quantity }}" required></label>
-      <label class="field"><span>Open</span><input type="number" min="0" step="0.25" name="opened_{{ batch.id }}" value="{{ batch.opened }}" required></label>
-      <label class="field"><span>Bought</span><input type="date" name="bought_{{ batch.id }}" value="{{ batch.bought_on or '' }}"></label>
-      <label class="field"><span>Expires</span><input type="date" name="expires_{{ batch.id }}" value="{{ batch.expires_on or '' }}"></label>
-    </div>
-    {% else %}<div class="shopping-empty"><strong>No stock batches yet.</strong><span>Add the first purchase below.</span></div>{% endfor %}
-  </div><div class="stock-save-all"><button class="save-button" type="submit">Save all batches</button></div></form>
+  <section class="current-batches"><div class="batch-section-heading"><div><h2>Current batches</h2><p>{{ batches|length }} active purchase{% if batches|length != 1 %}s{% endif %}</p></div><span>{{ item.quantity }} total</span></div>
+    <div class="batch-list">{% for batch in batches %}
+      <article class="batch-card batch-edit-card">
+        <form class="batch-edit-form" method="post" action="/items/{{ item.id }}/batches/{{ batch.id }}">
+          <input type="hidden" name="return_to" value="{{ return_to }}">
+          <div class="batch-card-title"><span>{{ loop.index }}</span><div><strong>{{ batch.location_name }}</strong><small>{% if batch.expires_on %}Expires {{ batch.expires_on }}{% else %}No expiration set{% endif %}</small></div></div>
+          <label class="field"><span>Location</span><select name="location_id">{% for location in locations %}<option value="{{ location.id }}"{% if location.id == batch.location_id %} selected{% endif %}>{{ location.name }}</option>{% endfor %}</select></label>
+          <label class="field"><span>Total in batch</span><input type="number" min="0" step="0.25" name="quantity" value="{{ batch.quantity }}" required></label>
+          <label class="field"><span>Already open</span><input type="number" min="0" step="0.25" name="opened" value="{{ batch.opened }}" required></label>
+          <label class="field"><span>Bought</span><input type="date" name="bought_on" value="{{ batch.bought_on or '' }}"></label>
+          <label class="field"><span>Expires</span><input type="date" name="expires_on" value="{{ batch.expires_on or '' }}"></label>
+          <button class="save-button batch-save" type="submit">Save changes</button>
+        </form>
+        <form class="batch-delete-form" method="post" action="/items/{{ item.id }}/batches/{{ batch.id }}/delete" onsubmit="return confirm('Delete this stock batch? Its quantity will be removed from inventory.')"><input type="hidden" name="return_to" value="{{ return_to }}"><button type="submit">Delete batch</button></form>
+      </article>
+    {% else %}<div class="shopping-empty"><strong>No stock batches yet.</strong><span>Add the first purchase below.</span></div>{% endfor %}</div>
+  </section>
 
-  <form id="add-purchase" class="batch-card batch-new" method="post" action="/items/{{ item.id }}/batches">
-    <input type="hidden" name="return_to" value="{{ return_to }}">
-    <div class="batch-new-title"><strong>Add more {{ item.name }}</strong><span>A new package, case, or dated lot</span></div>
-    <label class="field"><span>Location</span><select name="location_id">{% for location in locations %}<option value="{{ location.id }}">{{ location.name }}</option>{% endfor %}</select></label>
-    <label class="field"><span>Total</span><input type="number" min="0.25" step="0.25" name="quantity" value="1" required></label>
-    <label class="field"><span>Open</span><input type="number" min="0" step="0.25" name="opened" value="0" required></label>
-    <label class="field"><span>Bought</span><input type="date" name="bought_on" value="{{ today }}"></label>
-    <label class="field"><span>Expires</span><input type="date" name="expires_on"></label>
-    <button class="save-button" type="submit">Add batch</button>
-  </form>
-  <p class="stock-note">Set a batch total to 0 and save to remove it. Quick minus buttons use opened stock first, then the earliest expiration.</p>
+  <details class="add-batch-panel" id="add-purchase"><summary><span>＋</span><div><strong>Add a new purchase</strong><small>Use this only for another package, case, or dated lot.</small></div><b>Open</b></summary>
+    <form class="batch-card batch-new" method="post" action="/items/{{ item.id }}/batches">
+      <input type="hidden" name="return_to" value="{{ return_to }}">
+      <label class="field"><span>Location</span><select name="location_id">{% for location in locations %}<option value="{{ location.id }}">{{ location.name }}</option>{% endfor %}</select></label>
+      <label class="field"><span>Total</span><input type="number" min="0.25" step="0.25" name="quantity" value="1" required></label>
+      <label class="field"><span>Open</span><input type="number" min="0" step="0.25" name="opened" value="0" required></label>
+      <label class="field"><span>Bought</span><input type="date" name="bought_on" value="{{ today }}"></label>
+      <label class="field"><span>Expires</span><input type="date" name="expires_on"></label>
+      <button class="save-button" type="submit">Add purchase</button>
+    </form>
+  </details>
+  <p class="stock-note">Quick minus buttons use opened stock first, then the earliest expiration. Deleting a batch removes its remaining quantity from inventory.</p>
 </section>
 {% endblock %}

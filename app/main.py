@@ -31,7 +31,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.17.3")
+APP_VERSION = os.getenv("APP_VERSION", "1.18.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -1335,10 +1335,11 @@ async def save_stock_batches(item_id: int, request: Request):
     form = await request.form()
     return_to = safe_return_path(str(form.get("return_to", "/")))
     now = datetime.now().isoformat(timespec="seconds")
+    submitted_ids = {int(match.group(1)) for key in form.keys() if (match := re.fullmatch(r"quantity_(\d+)", str(key)))}
     with closing(db()) as conn:
         before = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM item_stocks WHERE item_id=?", (item_id,)).fetchone()[0]
-        batch_ids = [row[0] for row in conn.execute("SELECT id FROM stock_batches WHERE item_id=?", (item_id,))]
-        for batch_id in batch_ids:
+        valid_ids = {row[0] for row in conn.execute("SELECT id FROM stock_batches WHERE item_id=?", (item_id,))}
+        for batch_id in submitted_ids & valid_ids:
             try:
                 location_id = int(form.get(f"location_{batch_id}"))
                 quantity = float(form.get(f"quantity_{batch_id}"))
@@ -1347,7 +1348,10 @@ async def save_stock_batches(item_id: int, request: Request):
                 raise HTTPException(400, "Enter valid batch values") from exc
             if quantity < 0 or opened < 0 or opened > quantity:
                 raise HTTPException(400, "Opened stock cannot exceed the batch total")
-            conn.execute("UPDATE stock_batches SET location_id=?, quantity=?, opened=?, bought_on=?, expires_on=?, updated_at=? WHERE id=? AND item_id=?", (location_id, quantity, opened, normalize_date(str(form.get(f"bought_{batch_id}", ""))), normalize_date(str(form.get(f"expires_{batch_id}", ""))), now, batch_id, item_id))
+            if quantity == 0:
+                conn.execute("DELETE FROM stock_batches WHERE id=? AND item_id=?", (batch_id, item_id))
+            else:
+                conn.execute("UPDATE stock_batches SET location_id=?, quantity=?, opened=?, bought_on=?, expires_on=?, updated_at=? WHERE id=? AND item_id=?", (location_id, quantity, opened, normalize_date(str(form.get(f"bought_{batch_id}", ""))), normalize_date(str(form.get(f"expires_{batch_id}", ""))), now, batch_id, item_id))
         total = refresh_stock_from_batches(conn, item_id)
         record_inventory_event(conn, item_id, total - before, "restock" if total > before else "use")
         maybe_auto_add_shopping(conn, item_id)
@@ -1362,12 +1366,31 @@ def update_stock_batch(item_id: int, batch_id: int, quantity: float = Form(...),
     now = datetime.now().isoformat(timespec="seconds")
     with closing(db()) as conn:
         before = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM item_stocks WHERE item_id=?", (item_id,)).fetchone()[0]
-        cursor = conn.execute("UPDATE stock_batches SET location_id=?, quantity=?, opened=?, bought_on=?, expires_on=?, updated_at=? WHERE id=? AND item_id=?", (location_id, quantity, opened, normalize_date(bought_on), normalize_date(expires_on), now, batch_id, item_id))
+        if quantity == 0:
+            cursor = conn.execute("DELETE FROM stock_batches WHERE id=? AND item_id=?", (batch_id, item_id))
+        else:
+            cursor = conn.execute("UPDATE stock_batches SET location_id=?, quantity=?, opened=?, bought_on=?, expires_on=?, updated_at=? WHERE id=? AND item_id=?", (location_id, quantity, opened, normalize_date(bought_on), normalize_date(expires_on), now, batch_id, item_id))
         if not cursor.rowcount:
             raise HTTPException(404)
         total = refresh_stock_from_batches(conn, item_id)
         record_inventory_event(conn, item_id, total - before, "restock" if total > before else "use")
         maybe_auto_add_shopping(conn, item_id)
+        conn.commit()
+    return RedirectResponse(f"/items/{item_id}/stock?return_to={urllib.parse.quote(safe_return_path(return_to), safe='/')}", status_code=303)
+
+
+@app.post("/items/{item_id}/batches/{batch_id}/delete")
+def delete_stock_batch(item_id: int, batch_id: int, return_to: str = Form("/")):
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(db()) as conn:
+        before = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM item_stocks WHERE item_id=?", (item_id,)).fetchone()[0]
+        cursor = conn.execute("DELETE FROM stock_batches WHERE id=? AND item_id=?", (batch_id, item_id))
+        if not cursor.rowcount:
+            raise HTTPException(404, "Stock batch not found")
+        total = refresh_stock_from_batches(conn, item_id)
+        record_inventory_event(conn, item_id, total - before, "use")
+        maybe_auto_add_shopping(conn, item_id)
+        conn.execute("UPDATE items SET updated_at=? WHERE id=?", (now, item_id))
         conn.commit()
     return RedirectResponse(f"/items/{item_id}/stock?return_to={urllib.parse.quote(safe_return_path(return_to), safe='/')}", status_code=303)
 
