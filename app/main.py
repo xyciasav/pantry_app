@@ -26,12 +26,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from pydantic import BaseModel, Field
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.18.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.19.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -62,6 +63,14 @@ CATEGORIES = {
 
 DEFAULT_CATEGORIES = CATEGORIES.copy()
 
+
+class DinnerIdeasRequest(BaseModel):
+    avoid_meals: list[str] = Field(default_factory=list, description="Additional meal names that should not be suggested.")
+
+
+class DinnerRecipeRequest(BaseModel):
+    meal_name: str = Field(min_length=1, max_length=160, description="The selected dinner name to turn into a full recipe.")
+
 ITEM_ART = {
     "onion": ("onion", "onions", "shallot", "shallots"),
     "garlic": ("garlic",),
@@ -82,7 +91,7 @@ ITEM_ART = {
     "frozen-food": ("frozen", "ice cream", "pizza"),
 }
 
-app = FastAPI(title="Shelf Life", description="Read Shelf Life pantry inventory through the authenticated inventory endpoint.", version=APP_VERSION)
+app = FastAPI(title="Shelf Life", description="Read Shelf Life data and generate dinner ideas through authenticated API endpoints.", version=APP_VERSION)
 api_bearer = HTTPBearer(auto_error=False, description="Enter the PANTRY_API_KEY configured in Portainer.")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
@@ -1509,8 +1518,7 @@ def dinner_generate_get():
     return RedirectResponse("/dinner", status_code=303)
 
 
-@app.post("/dinner/generate")
-def generate_dinner():
+def dinner_generation_context() -> tuple[list[dict], list[str], list[dict]]:
     with closing(db()) as conn:
         inventory = dinner_inventory(conn)
         recent_cutoff = (date.today() - timedelta(days=14)).isoformat()
@@ -1522,6 +1530,12 @@ def generate_dinner():
             (recent_cutoff, date.today().isoformat(), upcoming_cutoff),
         )]
         tastes = household_taste_context(household_profiles(conn))
+    return inventory, avoid_meals, tastes
+
+
+@app.post("/dinner/generate")
+def generate_dinner():
+    inventory, avoid_meals, tastes = dinner_generation_context()
     if not inventory:
         return JSONResponse({"detail": "Add some in-stock items before asking for dinner ideas."}, status_code=400)
     job_id = start_dinner_job("picks", inventory, avoid_meals=avoid_meals, tastes=tastes)
@@ -2688,6 +2702,46 @@ def recipe_api(recipe_id: int):
         recipe = inventory_aware_recipe(json.loads(row["recipe_json"]), recipe_inventory_catalog(conn))
     recipe.update(recipe_labels(recipe))
     return {"id": recipe_id, "source": row["source"], "pinned": bool(row["pinned"]), **recipe}
+
+
+@app.post("/api/dinner/ideas", dependencies=[Depends(require_api_key)], status_code=202, summary="Start generating dinner ideas")
+def generate_dinner_ideas_api(payload: DinnerIdeasRequest | None = None):
+    if not LLM_URL or not LLM_MODEL:
+        raise HTTPException(503, "Dinner Assistant is not configured")
+    inventory, recent_meals, tastes = dinner_generation_context()
+    if not inventory:
+        raise HTTPException(409, "Add some in-stock items before asking for dinner ideas")
+    requested_avoid = [name.strip()[:160] for name in (payload.avoid_meals if payload else []) if name.strip()][:50]
+    avoid_meals = list(dict.fromkeys(recent_meals + requested_avoid))
+    job_id = start_dinner_job("picks", inventory, avoid_meals=avoid_meals, tastes=tastes)
+    return {"job_id": job_id, "status": "working", "status_url": f"/api/dinner/jobs/{job_id}"}
+
+
+@app.post("/api/dinner/recipe", dependencies=[Depends(require_api_key)], status_code=202, summary="Start generating a full recipe")
+def generate_dinner_recipe_api(payload: DinnerRecipeRequest):
+    if not LLM_URL or not LLM_MODEL:
+        raise HTTPException(503, "Dinner Assistant is not configured")
+    meal_name = payload.meal_name.strip()
+    if not meal_name:
+        raise HTTPException(400, "Choose a dinner first")
+    with closing(db()) as conn:
+        inventory = dinner_inventory(conn)
+        tastes = household_taste_context(household_profiles(conn))
+    job_id = start_dinner_job("recipe", inventory, meal_name=meal_name, tastes=tastes)
+    return {"job_id": job_id, "status": "working", "status_url": f"/api/dinner/jobs/{job_id}"}
+
+
+@app.get("/api/dinner/jobs/{job_id}", dependencies=[Depends(require_api_key)], summary="Get a dinner-generation job")
+def dinner_job_api(job_id: str):
+    job = get_dinner_job(job_id)
+    if not job:
+        raise HTTPException(404, "Dinner generation job not found or expired")
+    response = {"job_id": job_id, "kind": job["kind"], "status": job["status"], "meal_name": job["meal_name"] or None}
+    if job["status"] == "complete":
+        response["result"] = job["result"]
+    elif job["status"] == "error":
+        response["error"] = job["error"]
+    return response
 
 
 @app.get("/api/dashboard", dependencies=[Depends(require_api_key)], summary="Get the combined Shelf Life dashboard")

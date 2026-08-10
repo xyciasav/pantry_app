@@ -45,11 +45,11 @@ Changing the password or signing key immediately invalidates existing sessions. 
 
 ### Version and image name
 
-The default Docker image is named `shelf-life:1.18.0`, and the same version appears in the website header, footer, and `/health` response.
+The default Docker image is named `shelf-life:1.19.0`, and the same version appears in the website header, footer, and `/health` response.
 
 Portainer stack variables can override these values:
 
-- `PANTRY_VERSION=1.18.0` controls the Docker tag and displayed website version.
+- `PANTRY_VERSION=1.19.0` controls the Docker tag and displayed website version.
 - `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
 
 For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.
@@ -94,12 +94,20 @@ Leave `PANTRY_LLM_API_KEY` blank if the endpoint does not require authentication
 
 Generated recipes can be pinned into Shelf Life's Saved Recipes cookbook. The saved record includes reserved source and Outline ID fields so a later Outline publishing integration can be added without changing the recipe format; version 1.10.0 does not contact or publish to Outline.
 
-## Read-only dashboard and LLM API
+## Dashboard and Dinner API
 
 Set a long random `PANTRY_API_KEY` in Portainer, then send it as a Bearer token:
 
 ```bash
 curl -H "Authorization: Bearer YOUR_KEY" https://your-shelf-life.example/api/inventory
+```
+
+Start a Dinner job, then poll the returned `status_url` with the same Bearer key:
+
+```bash
+curl -X POST -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"avoid_meals":["tacos"]}' https://your-shelf-life.example/api/dinner/ideas
+curl -H "Authorization: Bearer YOUR_KEY" https://your-shelf-life.example/api/dinner/jobs/JOB_ID
 ```
 
 Available endpoints:
@@ -112,8 +120,11 @@ Available endpoints:
 - `/api/recipes` — saved recipes with meal type, protein, missing ingredients, and cookable status
 - `/api/recipes?include_details=true` — also include ingredients, instructions, time, servings, and photos
 - `/api/recipes/{id}` — one complete recipe with live inventory readiness
+- `POST /api/dinner/ideas` — start generating up to three dinner ideas; accepts optional JSON such as `{"avoid_meals":["tacos"]}`
+- `POST /api/dinner/recipe` — start a full recipe with JSON such as `{"meal_name":"Chicken Parmesan"}`
+- `/api/dinner/jobs/{job_id}` — poll either generation request until its status is `complete` or `error`
 
-The API key grants read-only access and does not allow inventory or meal-plan changes.
+The generation endpoints use Shelf Life's configured LLM connection and household taste profiles. Your other app only receives the generated result; the private `PANTRY_LLM_API_KEY` is never returned. These endpoints do not change inventory or the meal plan.
 
 OpenAPI discovery and interactive documentation are available without a webpage login at `/openapi.json` and `/docs`. All `/api/*` data endpoints require the Bearer API key.
 - Phone camera barcode scanning with Open Food Facts product lookup
