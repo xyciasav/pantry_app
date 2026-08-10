@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.19.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.20.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -92,7 +92,7 @@ ITEM_ART = {
 }
 
 app = FastAPI(title="Shelf Life", description="Read Shelf Life data and generate dinner ideas through authenticated API endpoints.", version=APP_VERSION)
-api_bearer = HTTPBearer(auto_error=False, description="Enter the PANTRY_API_KEY configured in Portainer.")
+api_bearer = HTTPBearer(auto_error=False, description="Enter an API key generated under Manage, or the legacy PANTRY_API_KEY configured in Portainer.")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 templates = Environment(
@@ -146,18 +146,34 @@ def prevent_browser_cache(response):
     return response
 
 
-def valid_api_key(request: Request) -> bool:
-    if not API_KEY:
+def api_key_matches(supplied: str, touch: bool = False) -> bool:
+    if not supplied:
         return False
+    if API_KEY and hmac.compare_digest(supplied, API_KEY):
+        return True
+    digest = hashlib.sha256(supplied.encode()).hexdigest()
+    try:
+        with closing(db()) as conn:
+            rows = conn.execute("SELECT id, key_hash FROM api_keys WHERE revoked_at IS NULL").fetchall()
+            matched_id = next((row["id"] for row in rows if hmac.compare_digest(digest, row["key_hash"])), None)
+            if matched_id and touch:
+                conn.execute("UPDATE api_keys SET last_used_at=? WHERE id=?", (datetime.now().isoformat(timespec="seconds"), matched_id))
+                conn.commit()
+            return matched_id is not None
+    except sqlite3.OperationalError:
+        return False
+
+
+def valid_api_key(request: Request) -> bool:
     authorization = request.headers.get("authorization", "")
     supplied = authorization[7:] if authorization.lower().startswith("bearer ") else ""
-    return bool(supplied) and hmac.compare_digest(supplied, API_KEY)
+    return api_key_matches(supplied, touch=True)
 
 
 def require_api_key(credentials: HTTPAuthorizationCredentials | None = Security(api_bearer)) -> None:
     supplied = credentials.credentials if credentials and credentials.scheme.lower() == "bearer" else ""
-    if not API_KEY or not supplied or not hmac.compare_digest(supplied, API_KEY):
-        raise HTTPException(401, "A valid PANTRY_API_KEY Bearer token is required", headers={"WWW-Authenticate": "Bearer"})
+    if not api_key_matches(supplied):
+        raise HTTPException(401, "A valid Shelf Life API key Bearer token is required", headers={"WWW-Authenticate": "Bearer"})
 
 
 @app.middleware("http")
@@ -266,6 +282,17 @@ def init_db() -> None:
             )"""
         )
         conn.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS api_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                key_prefix TEXT NOT NULL,
+                key_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT,
+                revoked_at TEXT
+            )"""
+        )
         conn.execute(
             """CREATE TABLE IF NOT EXISTS household_profiles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1466,7 +1493,37 @@ def manage_page(request: Request, restored: str = ""):
         )]
         shop_settings = shopping_settings(conn)
         profile_count = len(household_profiles(conn))
-    return render(request, "manage.html", managed_categories=managed_categories, restored=restored, api_enabled=bool(API_KEY), shop_settings=shop_settings, profile_count=profile_count, llm_enabled=bool(LLM_URL and LLM_MODEL), llm_model=LLM_MODEL)
+        api_keys = [dict(row) for row in conn.execute("SELECT id,name,key_prefix,created_at,last_used_at FROM api_keys WHERE revoked_at IS NULL ORDER BY created_at DESC")]
+    return render(request, "manage.html", managed_categories=managed_categories, restored=restored, api_enabled=bool(API_KEY or api_keys), api_keys=api_keys, legacy_api_enabled=bool(API_KEY), shop_settings=shop_settings, profile_count=profile_count, llm_enabled=bool(LLM_URL and LLM_MODEL), llm_model=LLM_MODEL)
+
+
+@app.post("/api-keys", response_class=HTMLResponse)
+def create_api_key(request: Request, name: str = Form(...)):
+    clean_name = name.strip()[:80]
+    if not clean_name:
+        raise HTTPException(400, "Give this API key a name")
+    generated_key = "slk_" + secrets.token_urlsafe(32)
+    now = datetime.now().isoformat(timespec="seconds")
+    with closing(db()) as conn:
+        conn.execute(
+            "INSERT INTO api_keys (name,key_prefix,key_hash,created_at) VALUES (?,?,?,?)",
+            (clean_name, generated_key[:12], hashlib.sha256(generated_key.encode()).hexdigest(), now),
+        )
+        conn.commit()
+    return render(request, "api_key_created.html", key_name=clean_name, generated_key=generated_key)
+
+
+@app.post("/api-keys/{key_id}/revoke")
+def revoke_api_key(key_id: int):
+    with closing(db()) as conn:
+        cursor = conn.execute(
+            "UPDATE api_keys SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
+            (datetime.now().isoformat(timespec="seconds"), key_id),
+        )
+        conn.commit()
+    if not cursor.rowcount:
+        raise HTTPException(404, "API key not found")
+    return RedirectResponse("/manage", status_code=303)
 
 
 @app.get("/household", response_class=HTMLResponse)

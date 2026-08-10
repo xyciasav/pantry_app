@@ -45,11 +45,11 @@ Changing the password or signing key immediately invalidates existing sessions. 
 
 ### Version and image name
 
-The default Docker image is named `shelf-life:1.19.0`, and the same version appears in the website header, footer, and `/health` response.
+The default Docker image is named `shelf-life:1.20.0`, and the same version appears in the website header, footer, and `/health` response.
 
 Portainer stack variables can override these values:
 
-- `PANTRY_VERSION=1.19.0` controls the Docker tag and displayed website version.
+- `PANTRY_VERSION=1.20.0` controls the Docker tag and displayed website version.
 - `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
 
 For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.
@@ -96,7 +96,9 @@ Generated recipes can be pinned into Shelf Life's Saved Recipes cookbook. The sa
 
 ## Dashboard and Dinner API
 
-Set a long random `PANTRY_API_KEY` in Portainer, then send it as a Bearer token:
+Open **Manage > App API keys**, give the connection a name, and select **Create API key**. Copy the generated key into the other app when it appears; Shelf Life stores only a one-way hash and cannot display the complete key again. Each connection can have its own key and revoked keys stop working immediately.
+
+The older `PANTRY_API_KEY` Portainer environment variable remains supported as an optional fallback. Send either kind of key as a Bearer token:
 
 ```bash
 curl -H "Authorization: Bearer YOUR_KEY" https://your-shelf-life.example/api/inventory
@@ -124,7 +126,7 @@ Available endpoints:
 - `POST /api/dinner/recipe` — start a full recipe with JSON such as `{"meal_name":"Chicken Parmesan"}`
 - `/api/dinner/jobs/{job_id}` — poll either generation request until its status is `complete` or `error`
 
-The generation endpoints use Shelf Life's configured LLM connection and household taste profiles. Your other app only receives the generated result; the private `PANTRY_LLM_API_KEY` is never returned. These endpoints do not change inventory or the meal plan.
+The generation endpoints use Shelf Life's configured LLM connection and household taste profiles. Your other app only receives the generated result; the private `PANTRY_LLM_API_KEY` is never returned. Generated app keys are included in Shelf Life backups, but their original plaintext is not. These endpoints do not change inventory or the meal plan.
 
 OpenAPI discovery and interactive documentation are available without a webpage login at `/openapi.json` and `/docs`. All `/api/*` data endpoints require the Bearer API key.
 - Phone camera barcode scanning with Open Food Facts product lookup
