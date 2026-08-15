@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.20.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.21.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -422,6 +422,23 @@ def normalize_date(value: str | None) -> str | None:
         return date.fromisoformat(value).isoformat()
     except ValueError as exc:
         raise HTTPException(400, "Invalid date") from exc
+
+
+def normalize_barcode(value: str | None) -> str:
+    """Use Open Food Facts/GTIN leading-zero normalization for matching."""
+    digits = "".join(character for character in (value or "") if character.isdigit())
+    significant = digits.lstrip("0") or "0"
+    if len(significant) <= 7:
+        return significant.zfill(8)
+    if 9 <= len(significant) <= 12:
+        return significant.zfill(13)
+    return digits
+
+
+def barcode_item_match(conn: sqlite3.Connection, code: str, exclude_item_id: int = 0) -> sqlite3.Row | None:
+    normalized = normalize_barcode(code)
+    rows = conn.execute("SELECT * FROM items WHERE barcode IS NOT NULL AND barcode != '' AND id != ?", (exclude_item_id,)).fetchall()
+    return next((row for row in rows if normalize_barcode(row["barcode"]) == normalized), None)
 
 
 def refresh_stock_from_batches(conn: sqlite3.Connection, item_id: int) -> float:
@@ -1107,11 +1124,15 @@ async def save_item(
         filename = f"{secrets.token_hex(16)}{extension}"
         (UPLOAD_DIR / filename).write_bytes(content)
         saved_image_url = f"/uploads/{filename}"
+    clean_barcode = normalize_barcode(barcode) if barcode.strip() else ""
     with closing(db()) as conn:
+        duplicate = barcode_item_match(conn, clean_barcode, item_id or 0) if clean_barcode else None
+        if duplicate:
+            raise HTTPException(409, f"That barcode is already attached to {duplicate['name']}")
         if item_id:
             conn.execute(
                 "UPDATE items SET name=?, category=?, unit=?, low_at=?, bought_on=?, expires_on=?, notes=?, ingredients=?, barcode=?, image_url=?, updated_at=? WHERE id=?",
-                (name.strip(), category if category in CATEGORIES else "other", unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), ingredients.strip(), barcode.strip(), saved_image_url, now, item_id),
+                (name.strip(), category if category in CATEGORIES else "other", unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), ingredients.strip(), clean_barcode, saved_image_url, now, item_id),
             )
         else:
             if location_id is None or starting_unopened is None:
@@ -1122,7 +1143,7 @@ async def save_item(
                 raise HTTPException(400, "Invalid storage location")
             cursor = conn.execute(
                 "INSERT INTO items (name, category, location, location_id, quantity, unit, low_at, bought_on, expires_on, notes, ingredients, barcode, image_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (name.strip(), category if category in CATEGORIES else "other", location_row["kind"], location_id, total_quantity, unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), ingredients.strip(), barcode.strip(), saved_image_url, now, now),
+                (name.strip(), category if category in CATEGORIES else "other", location_row["kind"], location_id, total_quantity, unit.strip() or "item", low_at, normalize_date(bought_on), normalize_date(expires_on), notes.strip(), ingredients.strip(), clean_barcode, saved_image_url, now, now),
             )
             new_item_id = cursor.lastrowid
             conn.execute("INSERT INTO stock_batches (item_id, location_id, quantity, opened, bought_on, expires_on, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (new_item_id, location_id, total_quantity, opened, normalize_date(bought_on), normalize_date(expires_on), now, now))
@@ -2536,8 +2557,32 @@ async def restore_backup(backup: UploadFile = File(...)):
 
 
 @app.get("/scan", response_class=HTMLResponse)
-def scan_page(request: Request):
-    return render(request, "scan.html")
+def scan_page(request: Request, item_id: int = 0, return_to: str = "/"):
+    target_item = None
+    if item_id:
+        with closing(db()) as conn:
+            row = conn.execute("SELECT id,name,barcode,image_url FROM items WHERE id=?", (item_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Item not found")
+        target_item = dict(row)
+    return render(request, "scan.html", target_item=target_item, return_to=safe_return_path(return_to, f"/items/{item_id}" if item_id else "/"))
+
+
+@app.post("/items/{item_id}/barcode")
+def attach_item_barcode(item_id: int, barcode: str = Form(...), return_to: str = Form("/")):
+    normalized = normalize_barcode(barcode)
+    if not 6 <= len(normalized) <= 14:
+        raise HTTPException(400, "Enter a valid barcode")
+    with closing(db()) as conn:
+        item = conn.execute("SELECT id,name FROM items WHERE id=?", (item_id,)).fetchone()
+        if not item:
+            raise HTTPException(404, "Item not found")
+        duplicate = barcode_item_match(conn, normalized, item_id)
+        if duplicate:
+            raise HTTPException(409, f"That barcode is already attached to {duplicate['name']}")
+        conn.execute("UPDATE items SET barcode=?,updated_at=? WHERE id=?", (normalized, datetime.now().isoformat(timespec="seconds"), item_id))
+        conn.commit()
+    return RedirectResponse(safe_return_path(return_to, f"/items/{item_id}"), status_code=303)
 
 
 def infer_category(tags: list[str]) -> str:
@@ -2553,12 +2598,41 @@ def infer_category(tags: list[str]) -> str:
     return next((category for category, words in rules.items() if any(word in text for word in words)), "pantry")
 
 
+def open_food_facts_lookup(digits: str) -> tuple[dict, bool]:
+    fields = "code,product_name,product_name_en,brands,quantity,image_front_url,categories_tags,ingredients_text,ingredients_text_en"
+    urls = [
+        f"https://world.openfoodfacts.org/api/v3.6/product/{digits}.json?product_type=all&fields={urllib.parse.quote(fields)}",
+        f"https://world.openfoodfacts.org/api/v2/product/{digits}.json?fields={urllib.parse.quote(fields)}",
+    ]
+    unavailable = False
+    received_response = False
+    for url in urls:
+        request = urllib.request.Request(url, headers={"User-Agent": f"ShelfLife/{APP_VERSION} (https://github.com/xyciasav/pantry_app)"})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                payload = json.load(response)
+                received_response = True
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                continue
+            unavailable = True
+            continue
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            unavailable = True
+            continue
+        product = payload.get("product") or {}
+        if product and (payload.get("status") != 0):
+            return product, False
+    return {}, unavailable and not received_response
+
+
 @app.get("/api/barcode/{code}")
 def barcode_lookup(code: str):
-    digits = "".join(character for character in code if character.isdigit())
+    digits = normalize_barcode(code)
     if not 6 <= len(digits) <= 14:
         raise HTTPException(400, "Enter a valid barcode")
     with closing(db()) as conn:
+        matched = barcode_item_match(conn, digits)
         pantry_row = conn.execute(
             """SELECT items.*,
                       COALESCE(SUM(item_stocks.quantity), 0) AS total_quantity,
@@ -2568,10 +2642,10 @@ def barcode_lookup(code: str):
                FROM items
                LEFT JOIN item_stocks ON item_stocks.item_id = items.id
                LEFT JOIN locations ON locations.id = item_stocks.location_id
-               WHERE items.barcode = ?
+               WHERE items.id = ?
                GROUP BY items.id
                ORDER BY items.updated_at DESC LIMIT 1""",
-            (digits,),
+            (matched["id"] if matched else 0,),
         ).fetchone()
     if pantry_row:
         pantry_item = view_item(pantry_row)
@@ -2586,18 +2660,9 @@ def barcode_lookup(code: str):
             "opened": pantry_item["opened_quantity"],
             "unit": pantry_item["unit"],
         }
-    fields = "code,product_name,brands,quantity,image_front_url,categories_tags,ingredients_text,ingredients_text_en"
-    url = f"https://world.openfoodfacts.org/api/v3/product/{digits}?fields={urllib.parse.quote(fields)}"
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": "ShelfLife/1.0 (https://github.com/xyciasav/pantry_app)"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=8) as response:
-            payload = json.load(response)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+    product, unavailable = open_food_facts_lookup(digits)
+    if unavailable and not product:
         return JSONResponse({"found": False, "barcode": digits, "message": "Product lookup is temporarily unavailable"}, status_code=503)
-    product = payload.get("product") or {}
     name = product.get("product_name") or product.get("product_name_en")
     if not name:
         return {"found": False, "barcode": digits, "message": "Barcode scanned. Add the product name to save it."}
@@ -2606,7 +2671,7 @@ def barcode_lookup(code: str):
     quantity = product.get("quantity", "")
     return {
         "found": True,
-        "barcode": digits,
+        "barcode": normalize_barcode(product.get("code") or digits),
         "name": display_name,
         "category": infer_category(product.get("categories_tags") or []),
         "unit": quantity or "item",

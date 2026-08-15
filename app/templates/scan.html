@@ -1,13 +1,14 @@
 {% extends "base.html" %}
-{% block title %}Scan barcode · Shelf Life{% endblock %}
+{% block title %}Scan barcode - Shelf Life{% endblock %}
 {% block content %}
 <section class="scan-shell">
-  <a class="back" href="/">← Back to kitchen</a>
-  <div class="form-heading"><p class="eyebrow">QUICK ADD</p><h1>Scan a barcode</h1><p>Point your phone at the product barcode and hold steady.</p></div>
+  <a class="back" href="{{ return_to if target_item else '/' }}">&larr; {{ 'Back to item' if target_item else 'Back to kitchen' }}</a>
+  <div class="form-heading"><p class="eyebrow">{{ 'MATCH EXISTING ITEM' if target_item else 'QUICK ADD' }}</p><h1>{{ 'Scan for ' ~ target_item.name if target_item else 'Scan a barcode' }}</h1><p>{{ 'The scanned code will be attached to this item for future quick scans.' if target_item else 'Point your phone at the product barcode and hold steady.' }}</p></div>
+  {% if target_item %}<div class="scan-target"><strong>{{ target_item.name }}</strong><span>Current barcode: {{ target_item.barcode or 'not set' }}</span></div>{% endif %}
   <div class="scanner">
     <video id="camera" playsinline muted></video>
     <div class="scan-frame"><i></i><span>Place barcode inside the frame</span></div>
-    <div id="scanStatus" class="scan-status">Starting camera…</div>
+    <div id="scanStatus" class="scan-status">Starting camera&hellip;</div>
   </div>
   <form id="manualForm" class="manual-barcode">
     <label class="field"><span>Or enter barcode</span><input id="barcodeInput" inputmode="numeric" pattern="[0-9]*" placeholder="0123456789012" required></label>
@@ -16,18 +17,28 @@
   <p class="scan-help">Camera scanning requires HTTPS when opened from another device. Manual entry always works.</p>
   <dialog id="quickAdjust" class="quick-dialog">
     <form id="quickForm" method="post">
-      <button class="dialog-close" type="button" aria-label="Close">×</button>
+      <button class="dialog-close" type="button" aria-label="Close">&times;</button>
       <div class="quick-product"><img id="quickImage" alt=""><div><p class="eyebrow">FOUND IN YOUR KITCHEN</p><h2 id="quickName"></h2><p id="quickOpen"></p></div></div>
       <div class="quick-quantity">
-        <button id="quickMinus" type="button" aria-label="Remove one">−</button>
+        <button id="quickMinus" type="button" aria-label="Remove one">&minus;</button>
         <div><strong id="quickCount">0</strong><span>unopened after saving</span></div>
-        <button id="quickPlus" type="button" aria-label="Add one">＋</button>
+        <button id="quickPlus" type="button" aria-label="Add one">+</button>
       </div>
       <input id="quickDelta" type="hidden" name="delta" value="0">
       <input type="hidden" name="return_to" value="/scan?saved=1">
       <div class="quick-actions"><a id="quickEdit" class="secondary-button" href="#">Full details</a><button class="save-button" type="submit">Save quantity</button></div>
     </form>
   </dialog>
+  {% if target_item %}<dialog id="assignBarcode" class="quick-dialog assign-barcode-dialog">
+    <form method="post" action="/items/{{ target_item.id }}/barcode">
+      <button class="dialog-close assign-close" type="button" aria-label="Close">&times;</button>
+      <p class="eyebrow">BARCODE FOUND</p><h2 id="assignName">Unknown product</h2><p id="assignCode"></p>
+      <input id="assignBarcodeValue" type="hidden" name="barcode">
+      <input type="hidden" name="return_to" value="{{ return_to }}">
+      <p>This connects the barcode to <strong>{{ target_item.name }}</strong>. It will not overwrite your item name or stock.</p>
+      <div class="quick-actions"><button class="save-button" type="submit">Attach barcode</button><button class="secondary-button assign-close" type="button">Cancel</button></div>
+    </form>
+  </dialog>{% endif %}
 </section>
 {% endblock %}
 {% block scripts %}
@@ -35,10 +46,12 @@
 <script>
 const video = document.getElementById('camera');
 const statusBox = document.getElementById('scanStatus');
-let busy = false;
 const quickDialog = document.getElementById('quickAdjust');
 const quickCount = document.getElementById('quickCount');
 const quickDelta = document.getElementById('quickDelta');
+const targetItemId = {{ target_item.id if target_item else 0 }};
+const assignDialog = document.getElementById('assignBarcode');
+let busy = false;
 let quickStartingCount = 0;
 
 function showInventoryMatch(product) {
@@ -46,7 +59,7 @@ function showInventoryMatch(product) {
   quickDelta.value = '0';
   quickCount.textContent = quickStartingCount;
   document.getElementById('quickName').textContent = product.name;
-  document.getElementById('quickOpen').textContent = Number(product.opened || 0) + ' open · ' + (product.unit || 'item');
+  document.getElementById('quickOpen').textContent = Number(product.opened || 0) + ' open - ' + (product.unit || 'item');
   document.getElementById('quickImage').src = product.image_url || '/static/items/canned-food.webp';
   document.getElementById('quickForm').action = '/items/' + product.item_id + '/quantity';
   document.getElementById('quickEdit').href = '/items/' + product.item_id + '/edit?return_to=' + encodeURIComponent('/scan');
@@ -61,15 +74,34 @@ function changePendingQuantity(amount) {
 
 document.getElementById('quickMinus').addEventListener('click', () => changePendingQuantity(-1));
 document.getElementById('quickPlus').addEventListener('click', () => changePendingQuantity(1));
-document.querySelector('.dialog-close').addEventListener('click', () => { quickDialog.close(); busy = false; });
+document.querySelector('#quickAdjust .dialog-close').addEventListener('click', () => { quickDialog.close(); busy = false; });
+document.querySelectorAll('.assign-close').forEach(button => button.addEventListener('click', () => { assignDialog.close(); busy = false; }));
 
 async function useBarcode(code) {
   if (busy) return;
   busy = true;
-  statusBox.textContent = 'Looking up product…';
+  statusBox.textContent = 'Looking up product...';
   try {
     const response = await fetch('/api/barcode/' + encodeURIComponent(code));
     const product = await response.json();
+    if (!response.ok && !(targetItemId && response.status === 503)) throw new Error(product.message || 'Lookup failed');
+    if (targetItemId) {
+      if (product.inventory_match && Number(product.item_id) !== targetItemId) {
+        statusBox.textContent = 'That barcode already belongs to ' + product.name + '.';
+        busy = false;
+        return;
+      }
+      if (product.inventory_match) {
+        statusBox.textContent = 'This barcode is already attached to this item.';
+        busy = false;
+        return;
+      }
+      document.getElementById('assignName').textContent = product.found ? product.name : 'Barcode ' + (product.barcode || code);
+      document.getElementById('assignCode').textContent = product.message || (product.found ? 'Product lookup matched this code.' : 'No catalog details were found; you can still attach the barcode.');
+      document.getElementById('assignBarcodeValue').value = product.barcode || code;
+      assignDialog.showModal();
+      return;
+    }
     if (product.inventory_match) {
       showInventoryMatch(product);
       return;
@@ -84,7 +116,7 @@ async function useBarcode(code) {
     }
     window.location.href = '/items/new?' + params.toString();
   } catch (error) {
-    statusBox.textContent = 'Could not look that up. Try manual entry again.';
+    statusBox.textContent = error.message || 'Could not look that up. Try manual entry again.';
     busy = false;
   }
 }
@@ -106,10 +138,10 @@ async function startScanner() {
   try {
     if ('BarcodeDetector' in window) {
       const supported = await BarcodeDetector.getSupportedFormats();
-      const formats = ['ean_13', 'ean_8', 'upc_a', 'upc_e'].filter(format => supported.includes(format));
+      const formats = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'].filter(format => supported.includes(format));
       if (formats.length) {
         const detector = new BarcodeDetector({formats});
-        video.srcObject = await navigator.mediaDevices.getUserMedia({video: {facingMode: {ideal: 'environment'}}});
+        video.srcObject = await navigator.mediaDevices.getUserMedia({video: {facingMode: {ideal: 'environment'}, width: {ideal: 1920}, height: {ideal: 1080}, focusMode: {ideal: 'continuous'}}});
         await video.play();
         statusBox.textContent = 'Ready to scan';
         const scan = async () => {
@@ -123,15 +155,12 @@ async function startScanner() {
         return;
       }
     }
-
-    statusBox.textContent = 'Starting compatible scanner…';
-    const reader = new ZXingBrowser.BrowserMultiFormatReader(undefined, {delayBetweenScanAttempts: 150});
+    statusBox.textContent = 'Starting compatible scanner...';
+    const reader = new ZXingBrowser.BrowserMultiFormatReader(undefined, {delayBetweenScanAttempts: 100});
     await reader.decodeFromConstraints(
-      {video: {facingMode: {ideal: 'environment'}, width: {ideal: 1280}, height: {ideal: 720}}},
+      {video: {facingMode: {ideal: 'environment'}, width: {ideal: 1920}, height: {ideal: 1080}}},
       video,
-      result => {
-        if (result && !busy) useBarcode(result.getText());
-      }
+      result => { if (result && !busy) useBarcode(result.getText()); }
     );
     statusBox.textContent = 'Ready to scan';
   } catch (error) {
