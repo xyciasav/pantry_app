@@ -49,7 +49,7 @@
     <a class="{{ 'active' if request.url.path.startswith('/dinner') or request.url.path.startswith('/meal-plan') else '' }}" href="/dinner"><span>🍽</span><b>Dinner</b></a>
     <a class="{{ 'active' if request.url.path.startswith('/recipes') else '' }}" href="/recipes"><span>📖</span><b>Recipes</b></a>
   </nav>
-  <dialog id="installHelp" class="install-help"><form method="dialog"><button class="dialog-close" aria-label="Close">&times;</button><img src="/static/app-icon-192.png" alt=""><p class="eyebrow">INSTALL SHELF LIFE</p><h2>Add it to your Home Screen</h2><p>In Safari, tap the <strong>Share</strong> button, then choose <strong>Add to Home Screen</strong>. Shelf Life will open full-screen like an app.</p><button class="save-button" value="close">Got it</button></form></dialog>
+  <dialog id="installHelp" class="install-help"><form method="dialog"><button class="dialog-close" aria-label="Close">&times;</button><img src="/static/app-icon-192.png" alt=""><p class="eyebrow">INSTALL SHELF LIFE</p><h2 id="installHelpTitle">Add it to your phone</h2><p id="installHelpText">Open your browser menu and choose <strong>Install app</strong> or <strong>Add to Home Screen</strong>.</p><p class="install-note">This installs Shelf Life on your Home Screen. It still connects to your hosted pantry server for current inventory.</p><button class="save-button" value="close">Got it</button></form></dialog>
   {% block scripts %}{% endblock %}
   <script>
   const shelfLifeFetch = window.fetch.bind(window);
@@ -73,9 +73,20 @@
   const installButton = document.getElementById('installApp');
   window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; installButton.hidden = false; });
   const installedAsApp = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-  const isAppleMobile = /iPad|iPhone|iPod/.test(navigator.userAgent);
-  if (isAppleMobile && !installedAsApp) { installButton.hidden = false; installButton.textContent = 'Install'; installButton.dataset.ios = 'yes'; }
-  installButton.addEventListener('click', async () => { if (installPrompt) { await installPrompt.prompt(); installPrompt = null; installButton.hidden = true; } else if (installButton.dataset.ios === 'yes') document.getElementById('installHelp').showModal(); });
+  const isAppleMobile = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  const isPhoneLayout = window.matchMedia('(max-width: 700px)').matches;
+  const installHelp = document.getElementById('installHelp');
+  if (isPhoneLayout && !installedAsApp) { installButton.hidden = false; installButton.textContent = 'Install'; }
+  installButton.addEventListener('click', async () => {
+    if (installPrompt) { await installPrompt.prompt(); installPrompt = null; return; }
+    const title = document.getElementById('installHelpTitle');
+    const text = document.getElementById('installHelpText');
+    if (isAppleMobile) { title.textContent = 'Add Shelf Life to Home Screen'; text.innerHTML = 'Open this page in <strong>Safari</strong>, tap the <strong>Share</strong> button, then choose <strong>Add to Home Screen</strong>.'; }
+    else if (isAndroid) { title.textContent = 'Install Shelf Life'; text.innerHTML = 'In <strong>Chrome</strong>, open the <strong>three-dot menu</strong> and choose <strong>Install app</strong> or <strong>Add to Home screen</strong>.'; }
+    else { title.textContent = 'Install Shelf Life'; text.innerHTML = 'Open your browser menu and choose <strong>Install app</strong> or <strong>Add to Home Screen</strong>. Chrome, Edge, and Safari provide this option when opened over HTTPS.'; }
+    installHelp.showModal();
+  });
   window.addEventListener('appinstalled', () => { installPrompt = null; installButton.hidden = true; });
 
   // Keep the touch dashboard anchored when quantities change or an item edit returns.
