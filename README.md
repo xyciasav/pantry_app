@@ -45,11 +45,11 @@ Changing the password or signing key immediately invalidates existing sessions. 
 
 ### Version and image name
 
-The default Docker image is named `shelf-life:1.22.0`, and the same version appears in the website header, footer, and `/health` response.
+The default Docker image is named `shelf-life:1.23.0`, and the same version appears in the website header, footer, and `/health` response.
 
 Portainer stack variables can override these values:
 
-- `PANTRY_VERSION=1.22.0` controls the Docker tag and displayed website version.
+- `PANTRY_VERSION=1.23.0` controls the Docker tag and displayed website version.
 - `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
 
 For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.
@@ -151,3 +151,12 @@ Open **Scan** from your phone, allow camera access, and point it at a UPC or EAN
 Shelf Life normalizes equivalent UPC/EAN codes so a 12-digit UPC still matches when a phone reports the 13-digit form with a leading zero. Open an existing item's detail or edit page and choose **Add barcode** / **Scan barcode** to connect a manually created item without changing its name or stock.
 
 Browsers require a secure HTTPS connection for camera access when the app is opened from another device. Put the Portainer service behind your usual HTTPS reverse proxy. Shelf Life uses native barcode detection when available and a bundled ZXing scanner on other modern browsers. Manual barcode entry works without camera access.
+
+## Install on a phone
+
+Shelf Life is a Progressive Web App and must be opened through HTTPS to install reliably.
+
+- **iPhone/iPad:** Open Shelf Life in Safari, tap **Share**, then **Add to Home Screen**. The in-app Install button also shows these instructions.
+- **Android:** Open Shelf Life in Chrome and choose **Install app**, or use Shelf Life's Install button when the browser makes installation available.
+
+The installed app uses a standalone window, dedicated PNG and maskable icons, safe-area spacing for notches/home indicators, and mobile-only bottom navigation. The desktop website keeps its existing layout. Inventory data still comes from the hosted Shelf Life server, so the installed PWA requires a connection to that server.

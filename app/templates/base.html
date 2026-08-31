@@ -2,10 +2,15 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#15352d">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Shelf Life">
+  <meta name="format-detection" content="telephone=no">
   <link rel="icon" href="/static/app-icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="/static/app-icon.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/app-icon-180.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <title>{% block title %}Shelf Life{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -16,6 +21,7 @@
   <link rel="stylesheet" href="/static/api-keys.css?v={{ app_version }}">
   <link rel="stylesheet" href="/static/scanner.css?v={{ app_version }}">
   <link rel="stylesheet" href="/static/assistant.css?v={{ app_version }}">
+  <link rel="stylesheet" href="/static/mobile-pwa.css?v={{ app_version }}">
 </head>
 <body>
   <header class="topbar">
@@ -36,6 +42,14 @@
   </header>
   <main>{% block content %}{% endblock %}</main>
   <footer class="site-footer">Shelf Life <span>v{{ app_version }}</span></footer>
+  <nav class="mobile-dock" aria-label="Main navigation">
+    <a class="{{ 'active' if request.url.path == '/' or request.url.path == '/inventory' or request.url.path.startswith('/items/') else '' }}" href="/"><span>⌂</span><b>Pantry</b></a>
+    <a class="{{ 'active' if request.url.path.startswith('/shopping') else '' }}" href="/shopping"><span>🛒{% if shopping_count %}<i>{{ shopping_count }}</i>{% endif %}</span><b>Shop</b></a>
+    <a class="dock-scan {{ 'active' if request.url.path.startswith('/scan') else '' }}" href="/scan"><span>▣</span><b>Scan</b></a>
+    <a class="{{ 'active' if request.url.path.startswith('/dinner') or request.url.path.startswith('/meal-plan') else '' }}" href="/dinner"><span>🍽</span><b>Dinner</b></a>
+    <a class="{{ 'active' if request.url.path.startswith('/recipes') else '' }}" href="/recipes"><span>📖</span><b>Recipes</b></a>
+  </nav>
+  <dialog id="installHelp" class="install-help"><form method="dialog"><button class="dialog-close" aria-label="Close">&times;</button><img src="/static/app-icon-192.png" alt=""><p class="eyebrow">INSTALL SHELF LIFE</p><h2>Add it to your Home Screen</h2><p>In Safari, tap the <strong>Share</strong> button, then choose <strong>Add to Home Screen</strong>. Shelf Life will open full-screen like an app.</p><button class="save-button" value="close">Got it</button></form></dialog>
   {% block scripts %}{% endblock %}
   <script>
   const shelfLifeFetch = window.fetch.bind(window);
@@ -58,7 +72,10 @@
   let installPrompt;
   const installButton = document.getElementById('installApp');
   window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; installButton.hidden = false; });
-  installButton.addEventListener('click', async () => { if (!installPrompt) return; await installPrompt.prompt(); installPrompt = null; installButton.hidden = true; });
+  const installedAsApp = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  const isAppleMobile = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  if (isAppleMobile && !installedAsApp) { installButton.hidden = false; installButton.textContent = 'Install'; installButton.dataset.ios = 'yes'; }
+  installButton.addEventListener('click', async () => { if (installPrompt) { await installPrompt.prompt(); installPrompt = null; installButton.hidden = true; } else if (installButton.dataset.ios === 'yes') document.getElementById('installHelp').showModal(); });
   window.addEventListener('appinstalled', () => { installPrompt = null; installButton.hidden = true; });
 
   // Keep the touch dashboard anchored when quantities change or an item edit returns.

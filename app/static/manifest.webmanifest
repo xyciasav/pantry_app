@@ -1,13 +1,24 @@
 {
   "name": "Shelf Life Pantry",
   "short_name": "Shelf Life",
+  "id": "/",
   "description": "Track pantry, fridge, freezer, expiration dates, and shopping needs.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
   "background_color": "#f7f3e7",
   "theme_color": "#15352d",
   "icons": [
-    {"src": "/static/app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+    {"src": "/static/app-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/static/app-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "/static/app-icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+    {"src": "/static/app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}
+  ],
+  "shortcuts": [
+    {"name": "Scan barcode", "short_name": "Scan", "url": "/scan", "icons": [{"src": "/static/app-icon-192.png", "sizes": "192x192", "type": "image/png"}]},
+    {"name": "Shopping list", "short_name": "Shopping", "url": "/shopping", "icons": [{"src": "/static/app-icon-192.png", "sizes": "192x192", "type": "image/png"}]},
+    {"name": "Add pantry item", "short_name": "Add item", "url": "/items/new", "icons": [{"src": "/static/app-icon-192.png", "sizes": "192x192", "type": "image/png"}]}
   ]
 }
