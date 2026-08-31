@@ -15,6 +15,7 @@
   <link rel="stylesheet" href="/static/stock.css?v={{ app_version }}">
   <link rel="stylesheet" href="/static/api-keys.css?v={{ app_version }}">
   <link rel="stylesheet" href="/static/scanner.css?v={{ app_version }}">
+  <link rel="stylesheet" href="/static/assistant.css?v={{ app_version }}">
 </head>
 <body>
   <header class="topbar">
@@ -37,6 +38,22 @@
   <footer class="site-footer">Shelf Life <span>v{{ app_version }}</span></footer>
   {% block scripts %}{% endblock %}
   <script>
+  const shelfLifeFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    const response = await shelfLifeFetch(...args);
+    const loginUrl = response.headers.get('X-Shelf-Life-Login');
+    if (response.status === 401 && loginUrl) {
+      window.location.assign(loginUrl);
+      return new Promise(() => {});
+    }
+    return response;
+  };
+  const refreshShelfLifeSession = () => {
+    if (document.visibilityState === 'visible') shelfLifeFetch('/session/refresh', {method:'POST', headers:{'X-Shelf-Life-Heartbeat':'1'}, cache:'no-store'}).catch(() => {});
+  };
+  setInterval(refreshShelfLifeSession, 30 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshShelfLifeSession(); });
+
   if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
   let installPrompt;
   const installButton = document.getElementById('installApp');

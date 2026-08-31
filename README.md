@@ -45,11 +45,11 @@ Changing the password or signing key immediately invalidates existing sessions. 
 
 ### Version and image name
 
-The default Docker image is named `shelf-life:1.21.0`, and the same version appears in the website header, footer, and `/health` response.
+The default Docker image is named `shelf-life:1.22.0`, and the same version appears in the website header, footer, and `/health` response.
 
 Portainer stack variables can override these values:
 
-- `PANTRY_VERSION=1.21.0` controls the Docker tag and displayed website version.
+- `PANTRY_VERSION=1.22.0` controls the Docker tag and displayed website version.
 - `PANTRY_IMAGE_NAME=shelf-life` controls the image name.
 
 For each release, change `PANTRY_VERSION` to the new version before rebuilding the stack. Portainer will then show images such as `shelf-life:1.1.0` instead of an ambiguous `latest` tag.
@@ -93,6 +93,14 @@ PANTRY_LLM_API_KEY=YOUR_PROXY_KEY
 Leave `PANTRY_LLM_API_KEY` blank if the endpoint does not require authentication. The API key stays in the container environment and is never shown or saved in the pantry database. The URL may point to a local proxy or another OpenAI-compatible `/v1` endpoint. The Dinner page sends inventory plus the structured household taste profiles managed inside Shelf Life. It first requests up to three meal names and requests the full recipe only after you select one. It does not change inventory automatically.
 
 Generated recipes can be pinned into Shelf Life's Saved Recipes cookbook. The saved record includes reserved source and Outline ID fields so a later Outline publishing integration can be added without changing the recipe format; version 1.10.0 does not contact or publish to Outline.
+
+Dinner suggestions retain 30 days of generated meal names, including picks that were not saved, and rotate through meal-style prompts to reduce repeated proteins, starches, and cooking methods. The history is stored in the Shelf Life database and included in backups.
+
+## Shopping analysis
+
+Shelf Life records inventory decreases as usage. The selected 7/14/30/60-day window rolls forward daily and supplies most of the usage-rate estimate; older usage remains as a lower-weight long-term baseline so established habits do not vanish when they leave the recent window. At least two recorded decreases and seven observed days are required for behavior-based timing. Out-of-stock, low-stock, and manually marked opened-low items can be recommended immediately.
+
+Analysis mode displays recommendations without changing the shopping list. Assistant mode evaluates items after stock changes, when its settings are saved, and whenever the shopping page opens, then automatically adds qualifying items.
 
 ## Dashboard and Dinner API
 

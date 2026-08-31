@@ -1,5 +1,5 @@
-const CACHE = 'shelf-life-static-v1.21.0';
-const ASSETS = ['/static/style.css', '/static/stock.css', '/static/api-keys.css', '/static/scanner.css', '/static/app-icon.svg'];
+const CACHE = 'shelf-life-static-v1.22.0';
+const ASSETS = ['/static/style.css', '/static/stock.css', '/static/api-keys.css', '/static/scanner.css', '/static/assistant.css', '/static/app-icon.svg'];
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting())));
 self.addEventListener('activate', event => event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim())));
 self.addEventListener('fetch', event => {

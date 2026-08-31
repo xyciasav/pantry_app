@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("PANTRY_DATA_DIR", BASE_DIR.parent / "data"))
 DB_PATH = DATA_DIR / "pantry.db"
-APP_VERSION = os.getenv("APP_VERSION", "1.21.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.22.0")
 AUTH_USERNAME = os.getenv("PANTRY_USERNAME", "")
 AUTH_PASSWORD = os.getenv("PANTRY_PASSWORD", "")
 AUTH_SECRET = os.getenv("PANTRY_SECRET_KEY", "")
@@ -47,6 +47,16 @@ LEGACY_COOKIE_NAME = "__Host-pantry_session"
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 DINNER_JOBS: dict[str, dict] = {}
 DINNER_JOBS_LOCK = threading.Lock()
+DINNER_VARIETY_FOCUSES = (
+    "bright, fresh, or herb-forward",
+    "roasted or sheet-pan with a clear protein and vegetable",
+    "stir-fry, skillet, or wok-style",
+    "soup, stew, or braise",
+    "pasta or noodles without repeating the last sauce style",
+    "rice, grain bowl, or composed plate",
+    "comforting bake or casserole",
+    "handheld, wrap, taco, or sandwich-style",
+)
 UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -146,6 +156,18 @@ def prevent_browser_cache(response):
     return response
 
 
+def login_return_path(request: Request) -> str:
+    if request.method in {"GET", "HEAD"}:
+        path = request.url.path
+        return path + (f"?{request.url.query}" if request.url.query else "")
+    referer = request.headers.get("referer", "")
+    if referer:
+        parsed = urllib.parse.urlparse(referer)
+        if not parsed.netloc or parsed.netloc == request.url.netloc:
+            return parsed.path + (f"?{parsed.query}" if parsed.query else "")
+    return "/"
+
+
 def api_key_matches(supplied: str, touch: bool = False) -> bool:
     if not supplied:
         return False
@@ -183,9 +205,14 @@ async def require_login(request: Request, call_next):
     session_token = request.cookies.get(COOKIE_NAME) or request.cookies.get(LEGACY_COOKIE_NAME)
     api_access = path.startswith("/api/") and valid_api_key(request)
     if not public and not api_access and not valid_session_token(session_token):
-        if path.startswith("/api/"):
-            return prevent_browser_cache(JSONResponse({"detail": "Authentication required"}, status_code=401))
-        next_path = urllib.parse.quote(path if path.startswith("/") else "/", safe="/")
+        return_path = safe_return_path(login_return_path(request))
+        next_path = urllib.parse.quote(return_path, safe="/")
+        login_url = f"/login?next={next_path}"
+        wants_json = path.startswith("/api/") or "application/json" in request.headers.get("accept", "").lower()
+        if wants_json:
+            response = JSONResponse({"detail": "Your login expired. Sign in again to continue.", "login_url": login_url}, status_code=401)
+            response.headers["X-Shelf-Life-Login"] = login_url
+            return prevent_browser_cache(response)
         return prevent_browser_cache(RedirectResponse(f"/login?next={next_path}", status_code=303))
     response = await call_next(request)
     if not path.startswith("/static/"):
@@ -338,6 +365,15 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             )"""
         )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS dinner_suggestion_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                meal_name TEXT NOT NULL,
+                variety_focus TEXT NOT NULL DEFAULT '',
+                suggested_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dinner_suggestion_date ON dinner_suggestion_history(suggested_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_meal_plan_date ON meal_plan(planned_date, position)")
         meal_columns = {row[1] for row in conn.execute("PRAGMA table_info(meal_plan)")}
         if "prep_completed_at" not in meal_columns:
@@ -345,6 +381,7 @@ def init_db() -> None:
         conn.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('shopping_mode', 'analysis')")
         conn.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('analysis_days', '7')")
         conn.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('analysis_started_at', ?)", (datetime.now().isoformat(timespec="seconds"),))
+        conn.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('dinner_variety_cursor', '0')")
         for key, (label, icon) in DEFAULT_CATEGORIES.items():
             conn.execute("INSERT OR IGNORE INTO categories (key, label, icon, custom) VALUES (?, ?, ?, 0)", (key, label, icon))
         columns = {row[1] for row in conn.execute("PRAGMA table_info(items)")}
@@ -695,14 +732,15 @@ def call_dinner_llm(system: str, user_data: dict, temperature: float = 0.7, max_
         raise RuntimeError(f"The LLM response could not be read: {exc}") from exc
 
 
-def ask_dinner_picks(inventory: list[dict], avoid_meals: list[str] | None = None, tastes: list[dict] | None = None) -> list[dict]:
+def ask_dinner_picks(inventory: list[dict], avoid_meals: list[str] | None = None, tastes: list[dict] | None = None, variety_focus: str = "") -> list[dict]:
     prompts = [
         "Use the supplied structured household taste profiles and pantry inventory. Treat allergies and avoidances as hard rules, and balance individual likes and dislikes. Choose three distinct dinner ideas. "
-        "Do not suggest any meal named in the do_not_repeat list. "
+        "Do not suggest any meal named in the do_not_repeat list, and do not merely rename one. Avoid repeating their main protein + starch + cooking-method pattern. "
+        "The three choices must be meaningfully different from each other in cooking method, meal format, and primary starch; vary the main protein when inventory permits. Use variety_focus as inspiration for at most one choice, not all three. "
         "Prefer opened and soon-expiring food. Do not write recipes. Return one JSON object with a meals array. "
         "Every meal must contain a real dish name and a one-sentence summary. Never return examples, instructions, placeholders, or ellipses.",
         "Create three actual dinner choices from this inventory now. Return only a JSON object containing a meals array; "
-        "Exclude every meal in do_not_repeat. "
+        "Exclude every meal in do_not_repeat and rotate away from their overall style. Make all three choices different in protein, base, and cooking method. "
         "each array entry must have the keys name and summary filled with real food content. No template text and no explanation.",
     ]
     last_error = "The LLM returned no usable dinner choices."
@@ -710,8 +748,8 @@ def ask_dinner_picks(inventory: list[dict], avoid_meals: list[str] | None = None
         try:
             result = call_dinner_llm(
                 prompt,
-                {"task": "choose_actual_dinners", "do_not_repeat": avoid_meals or [], "household_taste_profiles": tastes or [], "inventory": compact_dinner_inventory(inventory)},
-                0.7 if attempt == 0 else 0.25, 800,
+                {"task": "choose_actual_dinners", "request_nonce": secrets.token_hex(6), "variety_focus": variety_focus, "do_not_repeat": avoid_meals or [], "household_taste_profiles": tastes or [], "inventory": compact_dinner_inventory(inventory)},
+                0.9 if attempt == 0 else 0.45, 800,
             )
         except RuntimeError as exc:
             last_error = str(exc)
@@ -748,7 +786,7 @@ def ask_dinner_recipe(inventory: list[dict], meal_name: str, tastes: list[dict] 
     return result
 
 
-def start_dinner_job(kind: str, inventory: list[dict], meal_name: str = "", avoid_meals: list[str] | None = None, tastes: list[dict] | None = None) -> str:
+def start_dinner_job(kind: str, inventory: list[dict], meal_name: str = "", avoid_meals: list[str] | None = None, tastes: list[dict] | None = None, variety_focus: str = "") -> str:
     now = time.time()
     job_id = secrets.token_urlsafe(18)
     with DINNER_JOBS_LOCK:
@@ -758,8 +796,17 @@ def start_dinner_job(kind: str, inventory: list[dict], meal_name: str = "", avoi
 
     def run_job() -> None:
         try:
-            result = ask_dinner_picks(inventory, avoid_meals, tastes) if kind == "picks" else ask_dinner_recipe(inventory, meal_name, tastes)
+            result = ask_dinner_picks(inventory, avoid_meals, tastes, variety_focus) if kind == "picks" else ask_dinner_recipe(inventory, meal_name, tastes)
             error = ""
+            if kind == "picks" and isinstance(result, list):
+                with closing(db()) as conn:
+                    suggested_at = datetime.now().isoformat(timespec="seconds")
+                    conn.executemany(
+                        "INSERT INTO dinner_suggestion_history (meal_name,variety_focus,suggested_at) VALUES (?,?,?)",
+                        [(str(meal.get("name", ""))[:160], variety_focus, suggested_at) for meal in result if isinstance(meal, dict) and meal.get("name")],
+                    )
+                    conn.execute("DELETE FROM dinner_suggestion_history WHERE suggested_at < ?", ((datetime.now() - timedelta(days=90)).isoformat(timespec="seconds"),))
+                    conn.commit()
         except Exception as exc:
             result, error = None, str(exc) or "The dinner assistant could not complete this request."
         with DINNER_JOBS_LOCK:
@@ -783,17 +830,26 @@ def record_inventory_event(conn: sqlite3.Connection, item_id: int, delta: float,
 
 def shopping_analysis(conn: sqlite3.Connection, item: dict, settings: dict) -> dict:
     since = (datetime.now() - timedelta(days=settings["days"])).isoformat(timespec="seconds")
-    usage = conn.execute(
+    recent = conn.execute(
         """SELECT COALESCE(SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END), 0) AS used,
-                  COUNT(CASE WHEN delta < 0 THEN 1 END) AS uses,
-                  MIN(created_at) AS first_event
+                  COUNT(CASE WHEN delta < 0 THEN 1 END) AS uses
            FROM inventory_events WHERE item_id=? AND created_at>=?""",
         (item["id"], since),
     ).fetchone()
-    daily_use = usage["used"] / settings["days"] if settings["days"] else 0
-    days_left = item["unopened_quantity"] / daily_use if daily_use > 0 else None
+    history = conn.execute(
+        """SELECT COALESCE(SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END), 0) AS used,
+                  COUNT(CASE WHEN delta < 0 THEN 1 END) AS uses,
+                  MIN(CASE WHEN delta < 0 THEN created_at END) AS first_use
+           FROM inventory_events WHERE item_id=?""",
+        (item["id"],),
+    ).fetchone()
     observed_days = max(0, (datetime.now() - datetime.fromisoformat(settings["started_at"])).days)
-    enough_history = observed_days >= settings["days"] and usage["uses"] >= 2
+    history_days = max(1, (datetime.now() - datetime.fromisoformat(history["first_use"])).days) if history["first_use"] else 0
+    recent_daily = recent["used"] / settings["days"] if settings["days"] else 0
+    historical_daily = history["used"] / max(7, history_days) if history_days else 0
+    daily_use = (recent_daily * 0.75 + historical_daily * 0.25) if recent["uses"] else historical_daily
+    days_left = item["unopened_quantity"] / daily_use if daily_use > 0 else None
+    enough_history = observed_days >= min(7, settings["days"]) and history["uses"] >= 2
     should_buy = item["state"] in {"out", "low"} or (enough_history and days_left is not None and days_left <= 3)
     if item["opened_low"]:
         reason = "Opened package marked getting low" + (" · essential" if item["essential"] else "")
@@ -802,12 +858,13 @@ def shopping_analysis(conn: sqlite3.Connection, item: dict, settings: dict) -> d
     elif item["state"] == "low":
         reason = f"{item['unopened_quantity']:g} unopened; low alert is {item['low_at']:g}"
     elif enough_history and days_left is not None:
-        reason = f"About {days_left:.1f} days left based on {settings['days']}-day usage"
+        memory_note = f"{recent['uses']} recent / {history['uses']} total decreases"
+        reason = f"About {days_left:.1f} days left based on recent use + long-term memory ({memory_note})"
     else:
-        remaining_days = max(0, settings["days"] - observed_days)
-        reason = f"Learning usage ({usage['uses']} decrease{'s' if usage['uses'] != 1 else ''} recorded; {remaining_days} day{'s' if remaining_days != 1 else ''} left)"
-    confidence = "high" if usage["uses"] >= 5 else "medium" if usage["uses"] >= 2 else "learning"
-    return {"should_buy": should_buy, "reason": reason, "daily_use": daily_use, "days_left": days_left, "confidence": confidence}
+        remaining_days = max(0, min(7, settings["days"]) - observed_days)
+        reason = f"Learning usage ({history['uses']} decrease{'s' if history['uses'] != 1 else ''} recorded; {remaining_days} day{'s' if remaining_days != 1 else ''} left)"
+    confidence = "high" if history["uses"] >= 5 else "medium" if history["uses"] >= 2 else "learning"
+    return {"should_buy": should_buy, "reason": reason, "daily_use": daily_use, "days_left": days_left, "confidence": confidence, "recent_uses": recent["uses"], "history_uses": history["uses"]}
 
 
 def maybe_auto_add_shopping(conn: sqlite3.Connection, item_id: int) -> None:
@@ -919,6 +976,14 @@ def logout(request: Request):
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie(COOKIE_NAME, path="/", secure=request_uses_https(request), httponly=True, samesite="lax")
     response.delete_cookie(LEGACY_COOKIE_NAME, path="/", secure=True, httponly=True, samesite="strict")
+    prevent_browser_cache(response)
+    return response
+
+
+@app.post("/session/refresh", status_code=204)
+def refresh_session(request: Request):
+    response = Response(status_code=204)
+    response.set_cookie(COOKIE_NAME, create_session_token(), httponly=True, secure=request_uses_https(request), samesite="lax", path="/")
     prevent_browser_cache(response)
     return response
 
@@ -1596,27 +1661,38 @@ def dinner_generate_get():
     return RedirectResponse("/dinner", status_code=303)
 
 
-def dinner_generation_context() -> tuple[list[dict], list[str], list[dict]]:
+def dinner_generation_context() -> tuple[list[dict], list[str], list[dict], str]:
     with closing(db()) as conn:
         inventory = dinner_inventory(conn)
         recent_cutoff = (date.today() - timedelta(days=14)).isoformat()
         upcoming_cutoff = (date.today() + timedelta(days=7)).isoformat()
-        avoid_meals = [row[0] for row in conn.execute(
+        planned_or_cooked = [row[0] for row in conn.execute(
             """SELECT DISTINCT recipe_name FROM meal_plan
                WHERE (cooked_at IS NOT NULL AND substr(cooked_at,1,10) >= ?)
                   OR (planned_date BETWEEN ? AND ?)""",
             (recent_cutoff, date.today().isoformat(), upcoming_cutoff),
         )]
+        suggestion_cutoff = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+        recent_suggestions = [row[0] for row in conn.execute(
+            "SELECT meal_name FROM dinner_suggestion_history WHERE suggested_at>=? ORDER BY suggested_at DESC LIMIT 24",
+            (suggestion_cutoff,),
+        )]
+        avoid_meals = list(dict.fromkeys(planned_or_cooked + recent_suggestions))
+        cursor_row = conn.execute("SELECT value FROM app_settings WHERE key='dinner_variety_cursor'").fetchone()
+        cursor = int(cursor_row[0]) if cursor_row and str(cursor_row[0]).isdigit() else 0
+        variety_focus = DINNER_VARIETY_FOCUSES[cursor % len(DINNER_VARIETY_FOCUSES)]
+        conn.execute("INSERT INTO app_settings (key,value) VALUES ('dinner_variety_cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(cursor + 1),))
+        conn.commit()
         tastes = household_taste_context(household_profiles(conn))
-    return inventory, avoid_meals, tastes
+    return inventory, avoid_meals, tastes, variety_focus
 
 
 @app.post("/dinner/generate")
 def generate_dinner():
-    inventory, avoid_meals, tastes = dinner_generation_context()
+    inventory, avoid_meals, tastes, variety_focus = dinner_generation_context()
     if not inventory:
         return JSONResponse({"detail": "Add some in-stock items before asking for dinner ideas."}, status_code=400)
-    job_id = start_dinner_job("picks", inventory, avoid_meals=avoid_meals, tastes=tastes)
+    job_id = start_dinner_job("picks", inventory, avoid_meals=avoid_meals, tastes=tastes, variety_focus=variety_focus)
     return {"job_id": job_id, "status_url": f"/dinner/jobs/{job_id}"}
 
 
@@ -2350,6 +2426,10 @@ def mark_meal_prepped(entry_id: int, return_week: str = Form("")):
 def shopping_page(request: Request):
     with closing(db()) as conn:
         settings = shopping_settings(conn)
+        if settings["mode"] == "assistant":
+            for item_id in [row[0] for row in conn.execute("SELECT id FROM items")]:
+                maybe_auto_add_shopping(conn, item_id)
+            conn.commit()
         rows = conn.execute(
             """SELECT items.*, shopping_list.reason, shopping_list.automatic, shopping_list.added_at,
                       COALESCE(SUM(item_stocks.quantity),0) AS total_quantity,
@@ -2381,8 +2461,9 @@ def shopping_page(request: Request):
                 recommendations.append(item)
             elif analysis["confidence"] == "learning":
                 learning.append(item)
+        usage_event_count = conn.execute("SELECT COUNT(*) FROM inventory_events WHERE delta < 0").fetchone()[0]
     recommendations.sort(key=lambda item: (item["unopened_quantity"], item["name"].lower()))
-    return render(request, "shopping.html", listed=listed, extras=extras, recommendations=recommendations, learning_count=len(learning), shop_settings=settings)
+    return render(request, "shopping.html", listed=listed, extras=extras, recommendations=recommendations, learning_count=len(learning), usage_event_count=usage_event_count, shop_settings=settings)
 
 
 @app.post("/shopping/extras/{extra_id}/remove")
@@ -2830,12 +2911,12 @@ def recipe_api(recipe_id: int):
 def generate_dinner_ideas_api(payload: DinnerIdeasRequest | None = None):
     if not LLM_URL or not LLM_MODEL:
         raise HTTPException(503, "Dinner Assistant is not configured")
-    inventory, recent_meals, tastes = dinner_generation_context()
+    inventory, recent_meals, tastes, variety_focus = dinner_generation_context()
     if not inventory:
         raise HTTPException(409, "Add some in-stock items before asking for dinner ideas")
     requested_avoid = [name.strip()[:160] for name in (payload.avoid_meals if payload else []) if name.strip()][:50]
     avoid_meals = list(dict.fromkeys(recent_meals + requested_avoid))
-    job_id = start_dinner_job("picks", inventory, avoid_meals=avoid_meals, tastes=tastes)
+    job_id = start_dinner_job("picks", inventory, avoid_meals=avoid_meals, tastes=tastes, variety_focus=variety_focus)
     return {"job_id": job_id, "status": "working", "status_url": f"/api/dinner/jobs/{job_id}"}
 
 
